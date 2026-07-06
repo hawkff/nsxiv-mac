@@ -1,0 +1,31 @@
+#!/bin/sh
+# nsxiv-rifle for nsxiv-mac: open one image and browse its whole directory,
+# starting at that image. Multiple arguments open as-is.
+
+[ $# -eq 0 ] && exit 2
+
+if [ $# -gt 1 ] || [ -d "$1" ]; then
+    exec nsxiv-mac -- "$@"
+fi
+
+dir=$(dirname -- "$1")
+target=$(basename -- "$1")
+cd "$dir" || exec nsxiv-mac -- "$1"
+
+idx=0 count=0
+for f in *; do
+    [ -f "$f" ] || continue
+    ext=$(printf %s "${f##*.}" | tr '[:upper:]' '[:lower:]')
+    case "$ext" in
+    jpg | jpeg | jpe | png | gif | webp | heic | heif | bmp | tif | tiff | \
+        ico | icns | jp2 | avif | psd | tga | exr | pbm | pgm | ppm | sgi | dds | cr2 | nef)
+        count=$((count + 1))
+        set -- "$@" "$f"
+        [ "$f" = "$target" ] && idx=$count
+        ;;
+    esac
+done
+shift # drop the original argument, keep the built list
+
+[ "$idx" -eq 0 ] && exec nsxiv-mac -- "$target"
+exec nsxiv-mac -n "$idx" -- "$@"

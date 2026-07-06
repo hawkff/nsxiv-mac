@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: nscloud-macos-sequoia-arm64-6x14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: swift build -c release
+      - name: Smoke test
+        run: .build/release/nsxiv-mac -v
+      - name: Package
+        run: tar -czf nsxiv-mac.tar.gz -C .build/release nsxiv-mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nsxiv-mac
+          path: nsxiv-mac.tar.gz

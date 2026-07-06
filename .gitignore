@@ -1,0 +1,18 @@
+# OS / filesystem
+.DS_Store
+._*
+__MACOSX/
+
+#IDE
+.agents/
+.cursor
+AGENTS.md
+
+#folders
+/docs/
+/dist/
+
+# swift
+.build/
+.swiftpm/
+

@@ -1,0 +1,29 @@
+#!/bin/sh
+# Example key-handler for nsxiv-mac.
+# Install: mkdir -p ~/.config/nsxiv-mac/exec &&
+#          cp etc/key-handler.example ~/.config/nsxiv-mac/exec/key-handler &&
+#          chmod +x ~/.config/nsxiv-mac/exec/key-handler
+#
+# $1 is the key pressed after C-x; selected files arrive on stdin.
+
+case "$1" in
+"c")    # copy file paths to clipboard
+    tr '\n' ' ' | pbcopy ;;
+"y")    # copy the first image itself to clipboard
+    read -r file
+    osascript -e 'on run argv' \
+        -e 'set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)' \
+        -e 'end run' "$file" 2>/dev/null \
+    || osascript -e 'on run argv' \
+        -e 'set the clipboard to (read (POSIX file (item 1 of argv)) as JPEG picture)' \
+        -e 'end run' "$file" ;;
+"t")    # move to trash
+    while read -r file; do
+        osascript -e 'on run argv' \
+            -e 'tell app "Finder" to delete POSIX file (item 1 of argv)' \
+            -e 'end run' "$file" >/dev/null
+    done ;;
+"r")    # reveal in Finder
+    read -r file
+    open -R "$file" ;;
+esac
