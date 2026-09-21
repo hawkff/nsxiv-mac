@@ -7,6 +7,7 @@ third-party dependencies. Requires macOS 13 or later.
 ## Features
 
 - Image mode: zoom, pan, rotate, flip, gamma and contrast correction
+- Window in the style of mpv: the image fills it, the title bar fades in at the top edge
 - Thumbnail grid with a disk cache in `~/Library/Caches/nsxiv-mac`
 - Plays animated GIF, APNG, and WebP; steps through single frames
 - Reloads the image when the file changes on disk
@@ -74,7 +75,9 @@ nsxiv defaults, adjusted where noted:
 | `C-x KEY` | pass KEY and the file list to your key-handler |
 
 Mouse: click near the left or right edge to navigate, drag to pan, right-click
-to switch modes. The scroll wheel zooms; a trackpad pans and pinch-zooms.
+to switch modes. The scroll wheel zooms; a trackpad pans and pinch-zooms. Move
+the mouse to the top edge to show the title bar; drag it to move the window,
+double-click it to zoom.
 
 ## Edit mode
 

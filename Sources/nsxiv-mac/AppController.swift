@@ -138,6 +138,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         grid.onToggleMark = { [weak self] i in self?.toggleMark(at: i) }
 
         window.contentView = contentStack
+        TitleBar.install(in: window)
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -565,7 +566,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.updateBar()
         }
         editor = ed
-        window.contentView?.addSubview(ed.canvas)
+        // below the title bar overlay, above the image canvas
+        window.contentView?.addSubview(ed.canvas, positioned: .above, relativeTo: canvas)
         updateLayout()
     }
 
