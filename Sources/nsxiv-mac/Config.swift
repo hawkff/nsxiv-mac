@@ -6,7 +6,7 @@ enum Config {
     static let appName = "nsxiv-mac"
     static let appVersion = "0.1.0"
 
-    // default window size (overridden via -g)
+    // window size before the first image fits it, and the fixed size with -g
     static let winWidth: CGFloat = 800
     static let winHeight: CGFloat = 600
 

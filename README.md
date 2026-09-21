@@ -7,7 +7,10 @@ third-party dependencies. Requires macOS 13 or later.
 ## Features
 
 - Image mode: zoom, pan, rotate, flip, gamma and contrast correction
-- Thumbnail grid with a disk cache in `~/Library/Caches/nsxiv-mac`
+- Window in the style of mpv: it takes each image's size, capped to the screen, and
+  resizing keeps the aspect ratio; the image fills it and the title bar fades in at
+  the top edge. `-g WxH` fixes the size instead
+- Thumbnail grid; QuickLook renders and caches the thumbnails, `-p` bypasses that cache
 - Plays animated GIF, APNG, and WebP; steps through single frames
 - Reloads the image when the file changes on disk
 - Marks for batch workflows; `-o` prints marked files on exit
@@ -24,6 +27,7 @@ swift build -c release
 ```
 
 The binary lands in `.build/release/nsxiv-mac`. Copy it into your `$PATH`.
+CI builds carry the commit in `-v` output, as in `nsxiv-mac 0.1.0+260c922`.
 
 ## Usage
 
@@ -74,7 +78,9 @@ nsxiv defaults, adjusted where noted:
 | `C-x KEY` | pass KEY and the file list to your key-handler |
 
 Mouse: click near the left or right edge to navigate, drag to pan, right-click
-to switch modes. The scroll wheel zooms; a trackpad pans and pinch-zooms.
+to switch modes. The scroll wheel zooms; a trackpad pans and pinch-zooms. Move
+the mouse to the top edge to show the title bar; drag it to move the window,
+double-click it to zoom.
 
 ## Edit mode
 

@@ -1,14 +1,21 @@
 import AppKit
 import ImageIO
 
+extension CGContext {
+    // 8-bit sRGB with premultiplied alpha, the layout every renderer here draws into
+    static func rgba(width: Int, height: Int) -> CGContext? {
+        CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    }
+}
+
 final class LoadedImage {
     private let source: CGImageSource
     let frameCount: Int
     let delays: [TimeInterval]
     let size: CGSize // oriented pixel size of first frame
-    private let orientation: CGImagePropertyOrientation
-    private var cache: [Int: CGImage] = [:]
-    private var cacheOrder: [Int] = []
+    private let frames = NSCache<NSNumber, CGImage>()
 
     var isAnimated: Bool { frameCount > 1 }
 
@@ -27,9 +34,7 @@ final class LoadedImage {
         let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] ?? [:]
         guard let w = props[kCGImagePropertyPixelWidth] as? CGFloat,
               let h = props[kCGImagePropertyPixelHeight] as? CGFloat else { return nil }
-        let rawOrient = props[kCGImagePropertyOrientation] as? UInt32 ?? 1
-        orientation = CGImagePropertyOrientation(rawValue: rawOrient) ?? .up
-        let swapped = rawOrient >= 5
+        let swapped = (props[kCGImagePropertyOrientation] as? UInt32 ?? 1) >= 5
         size = swapped ? CGSize(width: h, height: w) : CGSize(width: w, height: h)
 
         var d: [TimeInterval] = []
@@ -37,18 +42,21 @@ final class LoadedImage {
             d.append(LoadedImage.delay(source: src, index: i))
         }
         delays = d
+        frames.countLimit = 48
     }
 
     func frame(_ index: Int) -> CGImage? {
         let i = max(0, min(index, frameCount - 1))
-        if let img = cache[i] { return img }
-        guard let raw = CGImageSourceCreateImageAtIndex(source, i, nil) else { return nil }
-        let img = LoadedImage.oriented(raw, orientation)
-        cache[i] = img
-        cacheOrder.append(i)
-        if cacheOrder.count > 48 {
-            cache.removeValue(forKey: cacheOrder.removeFirst())
-        }
+        if let img = frames.object(forKey: i as NSNumber) { return img }
+        // the thumbnail path applies EXIF orientation; capped at full size it is a plain decode
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: Int(max(size.width, size.height)),
+        ]
+        guard let img = CGImageSourceCreateThumbnailAtIndex(source, i, opts as CFDictionary)
+        else { return nil }
+        frames.setObject(img, forKey: i as NSNumber)
         return img
     }
 
@@ -71,33 +79,5 @@ final class LoadedImage {
             return t < 0.011 ? 0.1 : t
         }
         return 0.1
-    }
-
-    private static func oriented(_ img: CGImage, _ orientation: CGImagePropertyOrientation) -> CGImage {
-        guard orientation != .up else { return img }
-        let w = CGFloat(img.width), h = CGFloat(img.height)
-        let swapped = orientation.rawValue >= 5
-        let outSize = swapped ? CGSize(width: h, height: w) : CGSize(width: w, height: h)
-        guard let ctx = CGContext(
-            data: nil, width: Int(outSize.width), height: Int(outSize.height),
-            bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return img }
-
-        ctx.translateBy(x: outSize.width / 2, y: outSize.height / 2)
-        switch orientation {
-        case .down, .downMirrored: ctx.rotate(by: .pi)
-        case .left, .leftMirrored: ctx.rotate(by: .pi / 2)
-        case .right, .rightMirrored: ctx.rotate(by: -.pi / 2)
-        default: break
-        }
-        switch orientation {
-        case .upMirrored, .downMirrored, .leftMirrored, .rightMirrored:
-            ctx.scaleBy(x: -1, y: 1)
-        default: break
-        }
-        ctx.draw(img, in: CGRect(x: -w / 2, y: -h / 2, width: w, height: h))
-        return ctx.makeImage() ?? img
     }
 }

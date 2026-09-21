@@ -1,7 +1,7 @@
 import AppKit
 
 final class ThumbnailGridView: NSView {
-    var files: [FileEntry] = [] { didSet { thumbs = Array(repeating: nil, count: files.count) } }
+    var files: [FileEntry] = [] { didSet { reloadAll() } }
     var selection = 0
     var onOpen: ((Int) -> Void)?
     var onSelectionChange: (() -> Void)?
@@ -43,20 +43,6 @@ final class ThumbnailGridView: NSView {
         case .down: s += columns
         }
         selection = max(0, min(files.count - 1, s))
-        scrollToSelection()
-        needsDisplay = true
-        onSelectionChange?()
-    }
-
-    func selectFirst() {
-        selection = 0
-        scrollToSelection()
-        needsDisplay = true
-        onSelectionChange?()
-    }
-
-    func selectLast() {
-        selection = max(0, files.count - 1)
         scrollToSelection()
         needsDisplay = true
         onSelectionChange?()

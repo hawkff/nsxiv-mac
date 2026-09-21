@@ -13,6 +13,7 @@ final class EditController {
         .systemRed, .systemOrange, .systemYellow, .systemGreen,
         .systemBlue, .systemPurple, .black, .white,
     ]
+    static let paletteNames = ["red", "orange", "yellow", "green", "blue", "purple", "black", "white"]
     private var paletteIndex = 0
 
     static let emojis = ["✅", "❌", "⚠️", "❗", "⭐", "🔥", "👍", "👎", "💡", "🔒",
@@ -29,14 +30,14 @@ final class EditController {
     }
 
     var statusText: String {
-        var parts = ["EDIT [\(session.tool.label)]"]
+        var parts = ["EDIT [\(session.tool)]"]
         switch session.tool {
         case .rect, .ellipse:
             let fm = session.fillMode == .stroke ? "stroke"
                 : session.fillMode == .fill ? "fill" : "stroke+fill"
             parts.append(fm)
         case .censor:
-            parts.append(session.censorMode.label)
+            parts.append("\(session.censorMode)")
         case .stamp:
             parts.append(session.emoji)
         case .badge:
@@ -45,24 +46,10 @@ final class EditController {
             break
         }
         parts.append("w\(Int(session.lineWidth))")
-        parts.append(colorName(session.color))
+        parts.append(Self.paletteNames[paletteIndex])
         if session.selection != nil { parts.append("sel") }
         parts.append("\(session.annotations.count) items")
         return parts.joined(separator: " | ")
-    }
-
-    private func colorName(_ c: NSColor) -> String {
-        switch c {
-        case .systemRed: return "red"
-        case .systemOrange: return "orange"
-        case .systemYellow: return "yellow"
-        case .systemGreen: return "green"
-        case .systemBlue: return "blue"
-        case .systemPurple: return "purple"
-        case .black: return "black"
-        case .white: return "white"
-        default: return "custom"
-        }
     }
 
     // MARK: - key handling; returns nil if key means "exit edit mode"
