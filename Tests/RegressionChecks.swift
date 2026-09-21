@@ -23,7 +23,7 @@ struct RegressionChecks {
         let flat = FileList.build(paths: [directory.path], recursive: false, quiet: true)
         let recursive = FileList.build(paths: [directory.path], recursive: true, quiet: true)
         assert(flat.map(\.path) == [imageURL.standardizedFileURL.path],
-               "nonrecursive scan must exclude hidden and nested files")
+               "nonrecursive paths: \(flat.map(\.path)); expected: \(imageURL.standardizedFileURL.path)")
         assert(recursive.count == 2 && recursive.allSatisfy { $0.url.pathExtension == "png" },
                "recursive scan must retain only visible images")
 
