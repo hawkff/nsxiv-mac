@@ -71,11 +71,13 @@ enum VisionTools {
         #/[A-Za-z0-9+/_\-]{32,}={0,2}/#,
     ]
 
-    // whole words only, so ordinary text next to a match stays readable
+    // the match may fall short of the OCR token by two characters of stray punctuation;
+    // anything looser would censor ordinary words
     static func findPII(in words: [OCRWord]) -> [CGRect] {
         words.filter { word in
-            let bare = word.text.trimmingCharacters(in: .punctuationCharacters)
-            return piiPatterns.contains { bare.wholeMatch(of: $0) != nil }
+            piiPatterns.contains { pattern in
+                word.text.firstMatch(of: pattern).map { $0.output.count >= word.text.count - 2 } == true
+            }
         }.map { $0.box.insetBy(dx: -3, dy: -3) }
     }
 

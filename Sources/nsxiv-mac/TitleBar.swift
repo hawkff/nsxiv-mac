@@ -25,6 +25,11 @@ final class TitleBar: NSVisualEffectView {
             options: [.activeAlways, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
             owner: bar, userInfo: nil))
         bar.systemBar?.alphaValue = 0
+        // fullscreen transitions happen without mouse movement; re-apply the state
+        for name in [NSWindow.didEnterFullScreenNotification, NSWindow.didExitFullScreenNotification] {
+            NotificationCenter.default.addObserver(bar, selector: #selector(TitleBar.hide),
+                                                   name: name, object: window)
+        }
     }
 
     // drag on the visible bar moves the window, as the real title bar would
@@ -44,7 +49,7 @@ final class TitleBar: NSVisualEffectView {
         if event.clickCount == 2 { window?.zoom(self) }
     }
 
-    @objc private func hide() { fade(to: 0) }
+    @objc private func hide(_ sender: Any? = nil) { fade(to: 0) }
 
     private func fade(to alpha: CGFloat) {
         // native fullscreen slides the system bar in with the menu bar; leave
