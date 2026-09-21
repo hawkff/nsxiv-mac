@@ -11,12 +11,6 @@ jobs:
     runs-on: nscloud-macos-sequoia-arm64-6x14
     steps:
       - uses: actions/checkout@v4
-      - name: Stamp the version with the commit
-        env:
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          sed -i '' "s/appVersion = \"\([^\"]*\)\"/appVersion = \"\1+${SHA:0:7}\"/" Sources/nsxiv-mac/Config.swift
-          grep -q "+${SHA:0:7}" Sources/nsxiv-mac/Config.swift
       - name: Build
         run: swift build -c release
       - name: Smoke test
