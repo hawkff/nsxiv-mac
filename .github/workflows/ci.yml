@@ -21,6 +21,14 @@ jobs:
         run: swift build -c release
       - name: Smoke test
         run: .build/release/nsxiv-mac -v
+      - name: Regression checks
+        run: |
+          sources=()
+          for source in Sources/nsxiv-mac/*.swift; do
+            if [[ "$source" != */main.swift ]]; then sources+=("$source"); fi
+          done
+          swiftc -parse-as-library "${sources[@]}" Tests/RegressionChecks.swift -o "$RUNNER_TEMP/nsxiv-regressions"
+          "$RUNNER_TEMP/nsxiv-regressions"
       - name: Package
         run: tar -czf nsxiv-mac.tar.gz -C .build/release nsxiv-mac
       - uses: actions/upload-artifact@v4

@@ -139,6 +139,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         window.contentView = contentStack
         TitleBar.install(in: window)
+        if let geometry = options.geometry {
+            window.setFrame(NSRect(origin: window.frame.origin, size: geometry), display: false)
+        }
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -161,6 +164,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowDidResize(_ notification: Notification) {
         updateLayout()
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        fitWindow()
     }
 
     private func updateLayout() {

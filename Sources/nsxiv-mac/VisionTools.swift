@@ -1,7 +1,7 @@
 import AppKit
 import Vision
 
-// Vision/CoreImage helpers for edit mode. All completion handlers hop to main.
+// Vision/CoreImage helpers for edit mode. Public completions run on the main queue.
 enum VisionTools {
     // MARK: - OCR
 
@@ -31,7 +31,8 @@ enum VisionTools {
                                     width: bb.width * w, height: bb.height * h)))
                 }
             }
-            completion(lines.joined(separator: "\n"), words)
+            let text = lines.joined(separator: "\n")
+            DispatchQueue.main.async { [words] in completion(text, words) }
         }
     }
 
@@ -40,7 +41,8 @@ enum VisionTools {
     static func detectBarcodes(in image: CGImage,
                                completion: @escaping ([String]) -> Void) {
         run(VNDetectBarcodesRequest(), on: image) { (found: [VNBarcodeObservation]) in
-            completion(found.compactMap(\.payloadStringValue))
+            let payloads = found.compactMap(\.payloadStringValue)
+            DispatchQueue.main.async { completion(payloads) }
         }
     }
 
@@ -50,12 +52,13 @@ enum VisionTools {
                             completion: @escaping ([CGRect]) -> Void) {
         run(VNDetectFaceRectanglesRequest(), on: image) { (found: [VNFaceObservation]) in
             let w = CGFloat(image.width), h = CGFloat(image.height)
-            completion(found.map { obs in
+            let rects = found.map { obs in
                 let bb = obs.boundingBox
                 return CGRect(x: bb.minX * w, y: bb.minY * h,
                               width: bb.width * w, height: bb.height * h)
                     .insetBy(dx: -bb.width * w * 0.1, dy: -bb.height * h * 0.1)
-            })
+            }
+            DispatchQueue.main.async { completion(rects) }
         }
     }
 
@@ -131,7 +134,7 @@ enum VisionTools {
         DispatchQueue.global(qos: .userInitiated).async {
             try? VNImageRequestHandler(cgImage: image).perform([request])
             let found = (request.results as? [T]) ?? []
-            DispatchQueue.main.async { completion(found) }
+            completion(found)
         }
     }
 }
