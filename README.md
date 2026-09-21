@@ -7,7 +7,9 @@ third-party dependencies. Requires macOS 13 or later.
 ## Features
 
 - Image mode: zoom, pan, rotate, flip, gamma and contrast correction
-- Window in the style of mpv: the image fills it, the title bar fades in at the top edge
+- Window in the style of mpv: it takes each image's size, capped to the screen, and
+  resizing keeps the aspect ratio; the image fills it and the title bar fades in at
+  the top edge. `-g WxH` fixes the size instead
 - Thumbnail grid; QuickLook renders and caches the thumbnails, `-p` bypasses that cache
 - Plays animated GIF, APNG, and WebP; steps through single frames
 - Reloads the image when the file changes on disk

@@ -25,7 +25,7 @@ struct Options {
 
       -b            do not show the status bar
       -f            start in fullscreen
-      -g WxH        initial window size
+      -g WxH        fixed window size instead of fitting the window to each image
       -i            read file paths from stdin
       -n NUM        start at file number NUM
       -o            print marked files to stdout on quit

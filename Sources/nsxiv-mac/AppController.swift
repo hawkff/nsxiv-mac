@@ -179,6 +179,42 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateBar()
     }
 
+    // MARK: - window fitting (mpv's auto-window-resize and keepaspect-window)
+
+    // image pixels as points, rotation applied; nil when the window should keep its size
+    private var fittedImageSize: CGSize? {
+        guard options.geometry == nil, !thumbnailMode, let image,
+              !window.styleMask.contains(.fullScreen) else { return nil }
+        let s = image.size
+        return rotation % 180 == 0 ? s : CGSize(width: s.height, height: s.width)
+    }
+
+    // the content view fills the frame (fullSizeContentView), so frame math is content math
+    private func fitWindow() {
+        guard let size = fittedImageSize, let screen = window.screen else { return }
+        let barH = barVisible ? Config.barHeight : 0
+        let avail = screen.visibleFrame
+        let scale = min(1, avail.width / size.width, (avail.height - barH) / size.height)
+        let old = window.frame
+        var frame = old
+        frame.size = CGSize(width: size.width * scale, height: size.height * scale + barH)
+        frame.origin = CGPoint(x: old.midX - frame.width / 2, y: old.midY - frame.height / 2)
+        window.setFrame(window.constrainFrameRect(frame, to: screen), display: false)
+    }
+
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        guard let size = fittedImageSize else { return frameSize }
+        let barH = barVisible ? Config.barHeight : 0
+        let old = window.frame.size
+        // an edge drag changes one dimension, which drives the other; corner drags and
+        // zoom change both, and then the largest frame inside the proposal wins
+        let byHeight = (frameSize.height - barH) * size.width / size.height
+        let width = frameSize.width == old.width ? byHeight
+            : frameSize.height == old.height ? frameSize.width
+            : min(frameSize.width, byHeight)
+        return NSSize(width: width, height: width * size.height / size.width + barH)
+    }
+
     // MARK: - image loading
 
     private func setCurrent(_ index: Int) {
@@ -203,6 +239,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let entry = files[current]
         image = LoadedImage(url: entry.url)
         frameIndex = 0
+        fitWindow()
         if let image {
             canvas.errorText = nil
             canvas.setImage(processedFrame(), resetView: true)
@@ -222,6 +259,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard files.indices.contains(current) else { return }
         image = LoadedImage(url: files[current].url)
         frameIndex = 0
+        fitWindow()
         canvas.errorText = image == nil
             ? "could not load: \(files[current].url.lastPathComponent)" : nil
         canvas.setImage(processedFrame(), resetView: !keepView)
@@ -723,7 +761,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             markedPrinted = true
             exit(0)
         case "f": window.toggleFullScreen(nil); return true
-        case "b": barVisible.toggle(); updateLayout(); return true
+        case "b": barVisible.toggle(); updateLayout(); fitWindow(); return true
         case "g": setCurrent(0); return true
         case "G": setCurrent(files.count - 1); return true
         case "r": reloadCurrent(); return true
@@ -788,9 +826,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "F": canvas.setScaleMode(.fill); return true
         case "e": canvas.setScaleMode(.width); return true
         case "E": canvas.setScaleMode(.height); return true
-        case "<": rotation = (rotation + 270) % 360; redrawFrame(); return true
-        case ">": rotation = (rotation + 90) % 360; redrawFrame(); return true
-        case "?": rotation = (rotation + 180) % 360; redrawFrame(); return true
+        case "<": rotate(270); return true
+        case ">": rotate(90); return true
+        case "?": rotate(180); return true
         case "|": flipH.toggle(); redrawFrame(); return true
         case "_": flipV.toggle(); redrawFrame(); return true
         case "a": canvas.antialias.toggle(); return true
@@ -805,6 +843,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func reloadColor() {
         redrawFrame()
         updateBar()
+    }
+
+    private func rotate(_ degrees: Int) {
+        rotation = (rotation + degrees) % 360
+        redrawFrame()
+        fitWindow()
     }
 
     private func scrollScreenOrPage(_ d: Direction) {
