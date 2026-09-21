@@ -27,7 +27,6 @@ swift build -c release
 ```
 
 The binary lands in `.build/release/nsxiv-mac`. Copy it into your `$PATH`.
-CI builds carry the commit in `-v` output, as in `nsxiv-mac 0.1.0+260c922`.
 
 ## Usage
 
