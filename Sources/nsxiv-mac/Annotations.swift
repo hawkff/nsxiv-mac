@@ -4,36 +4,12 @@ import CoreText
 
 enum EditTool: CaseIterable {
     case select, arrow, rect, ellipse, text, pencil, marker, badge, stamp, censor, spotlight
-
-    var label: String {
-        switch self {
-        case .select: return "select"
-        case .arrow: return "arrow"
-        case .rect: return "rect"
-        case .ellipse: return "ellipse"
-        case .text: return "text"
-        case .pencil: return "pencil"
-        case .marker: return "marker"
-        case .badge: return "badge"
-        case .stamp: return "stamp"
-        case .censor: return "censor"
-        case .spotlight: return "spotlight"
-        }
-    }
 }
 
 enum FillMode: CaseIterable { case stroke, strokeFill, fill }
 
 enum CensorMode: CaseIterable {
     case pixelate, blur, solid
-
-    var label: String {
-        switch self {
-        case .pixelate: return "pixelate"
-        case .blur: return "blur"
-        case .solid: return "solid"
-        }
-    }
 }
 
 // All geometry is in image pixel coordinates, bottom-left origin
@@ -145,11 +121,7 @@ enum AnnotationRenderer {
 
     static func flatten(base: CGImage, annotations: [Annotation]) -> CGImage? {
         let w = base.width, h = base.height
-        guard let ctx = CGContext(
-            data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return nil }
+        guard let ctx = CGContext.rgba(width: w, height: h) else { return nil }
         ctx.draw(base, in: CGRect(x: 0, y: 0, width: w, height: h))
         drawAll(annotations, base: base, ctx: ctx,
                 imageSize: CGSize(width: w, height: h))

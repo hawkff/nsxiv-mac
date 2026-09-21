@@ -185,7 +185,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard files.indices.contains(index) else { return }
         if index != current { alternate = current }
         current = index
-        if !thumbnailMode { loadCurrent() }
+        if thumbnailMode { updateBar() } else { loadCurrent() }
         grid.select(current)
     }
 
@@ -218,14 +218,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func reloadCurrent(keepView: Bool = true) {
-        let savedRot = rotation, savedH = flipH, savedV = flipV
         stopAnimation()
         guard files.indices.contains(current) else { return }
         image = LoadedImage(url: files[current].url)
         frameIndex = 0
-        rotation = savedRot
-        flipH = savedH
-        flipV = savedV
         canvas.errorText = image == nil
             ? "could not load: \(files[current].url.lastPathComponent)" : nil
         canvas.setImage(processedFrame(), resetView: !keepView)
@@ -289,12 +285,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let w = CGFloat(img.width), h = CGFloat(img.height)
         let swapped = rotation % 180 != 0
         let outW = swapped ? h : w, outH = swapped ? w : h
-        guard let ctx = CGContext(
-            data: nil, width: Int(outW), height: Int(outH),
-            bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpace(name: CGColorSpace.sRGB)!,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return img }
+        guard let ctx = CGContext.rgba(width: Int(outW), height: Int(outH)) else { return img }
         ctx.translateBy(x: outW / 2, y: outH / 2)
         // screen-space rotation: CG y-axis points up, so negate for clockwise
         ctx.rotate(by: -CGFloat(rotation) * .pi / 180)
@@ -446,7 +437,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             stopSlideshow()
             stopAnimation()
             grid.files = files
-            grid.reloadAll()
             grid.select(current)
         } else {
             setCurrent(grid.selection)
@@ -490,7 +480,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func syncMarks() {
         grid.files = files
-        grid.reloadAll()
         grid.select(current)
         updateBar()
     }
@@ -507,7 +496,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         alternate = min(alternate, files.count - 1)
         lastMarked = min(lastMarked, files.count - 1)
         grid.files = files
-        grid.reloadAll()
         grid.select(current)
         if !thumbnailMode { loadCurrent() }
         updateBar()
@@ -589,7 +577,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let insertAt = min(current + 1, files.count)
             files.insert(FileEntry(path: savedURL.path), at: insertAt)
             grid.files = files
-            grid.reloadAll()
             setCurrent(insertAt)
         }
         updateLayout()
@@ -737,12 +724,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             exit(0)
         case "f": window.toggleFullScreen(nil); return true
         case "b": barVisible.toggle(); updateLayout(); return true
-        case "g":
-            thumbnailMode ? grid.selectFirst() : setCurrent(0)
-            return true
-        case "G":
-            thumbnailMode ? grid.selectLast() : setCurrent(files.count - 1)
-            return true
+        case "g": setCurrent(0); return true
+        case "G": setCurrent(files.count - 1); return true
         case "r": reloadCurrent(); return true
         case "R":
             if thumbnailMode {
@@ -826,7 +809,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func scrollScreenOrPage(_ d: Direction) {
         if thumbnailMode {
-            grid.scrollPage(d == .up ? .up : d == .down ? .down : d)
+            grid.scrollPage(d)
         } else {
             canvas.scrollStep(d, screenful: true)
         }

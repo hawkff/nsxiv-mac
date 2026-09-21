@@ -172,7 +172,8 @@ final class ImageCanvasView: NSView {
 
         let rect = CGRect(origin: pan, size: displaySize)
         if alphaLayer {
-            drawCheckerboard(ctx, in: rect.intersection(bounds))
+            Self.checkerboard.setFill()
+            rect.intersection(bounds).fill()
         }
         ctx.saveGState()
         ctx.interpolationQuality = antialias ? .high : .none
@@ -180,26 +181,18 @@ final class ImageCanvasView: NSView {
         ctx.restoreGState()
     }
 
-    private func drawCheckerboard(_ ctx: CGContext, in rect: CGRect) {
-        guard !rect.isNull, !rect.isEmpty else { return }
+    private static let checkerboard: NSColor = {
         let cell: CGFloat = 12
-        ctx.saveGState()
-        ctx.clip(to: rect)
-        ctx.setFillColor(NSColor.white.cgColor)
-        ctx.fill(rect)
-        ctx.setFillColor(NSColor(white: 0.75, alpha: 1).cgColor)
-        var y = rect.minY - rect.minY.truncatingRemainder(dividingBy: cell * 2)
-        while y < rect.maxY {
-            var x = rect.minX - rect.minX.truncatingRemainder(dividingBy: cell * 2)
-            while x < rect.maxX {
-                ctx.fill(CGRect(x: x, y: y, width: cell, height: cell))
-                ctx.fill(CGRect(x: x + cell, y: y + cell, width: cell, height: cell))
-                x += cell * 2
-            }
-            y += cell * 2
+        let tile = NSImage(size: CGSize(width: cell * 2, height: cell * 2), flipped: false) { r in
+            NSColor.white.setFill()
+            r.fill()
+            NSColor(white: 0.75, alpha: 1).setFill()
+            CGRect(x: 0, y: 0, width: cell, height: cell).fill()
+            CGRect(x: cell, y: cell, width: cell, height: cell).fill()
+            return true
         }
-        ctx.restoreGState()
-    }
+        return NSColor(patternImage: tile)
+    }()
 
     // MARK: - mouse
 

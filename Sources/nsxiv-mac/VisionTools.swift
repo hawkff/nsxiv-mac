@@ -12,37 +12,26 @@ enum VisionTools {
 
     static func recognizeText(in image: CGImage,
                               completion: @escaping (String, [OCRWord]) -> Void) {
-        var done = false
-        let request = VNRecognizeTextRequest { req, _ in
-            done = true
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.automaticallyDetectsLanguage = true
+        run(request, on: image) { (found: [VNRecognizedTextObservation]) in
             var lines: [String] = []
             var words: [OCRWord] = []
             let w = CGFloat(image.width), h = CGFloat(image.height)
-            for obs in (req.results as? [VNRecognizedTextObservation]) ?? [] {
+            for obs in found {
                 guard let cand = obs.topCandidates(1).first else { continue }
                 lines.append(cand.string)
-                let str = cand.string
-                var idx = str.startIndex
-                for token in str.split(separator: " ") {
-                    guard let range = str.range(of: token, range: idx..<str.endIndex)
-                    else { continue }
-                    idx = range.upperBound
-                    guard let boxObs = try? cand.boundingBox(for: range) else { continue }
-                    let bb = boxObs.boundingBox
+                for range in cand.string.ranges(of: #/\S+/#) {
+                    guard let box = try? cand.boundingBox(for: range) else { continue }
+                    let bb = box.boundingBox
                     words.append(OCRWord(
-                        text: String(token),
+                        text: String(cand.string[range]),
                         box: CGRect(x: bb.minX * w, y: bb.minY * h,
                                     width: bb.width * w, height: bb.height * h)))
                 }
             }
-            DispatchQueue.main.async { completion(lines.joined(separator: "\n"), words) }
-        }
-        request.recognitionLevel = .accurate
-        if #available(macOS 13.0, *) {
-            request.automaticallyDetectsLanguage = true
-        }
-        perform(request, on: image) {
-            if !done { DispatchQueue.main.async { completion("", []) } }
+            completion(lines.joined(separator: "\n"), words)
         }
     }
 
@@ -50,15 +39,8 @@ enum VisionTools {
 
     static func detectBarcodes(in image: CGImage,
                                completion: @escaping ([String]) -> Void) {
-        var done = false
-        let request = VNDetectBarcodesRequest { req, _ in
-            done = true
-            let payloads = ((req.results as? [VNBarcodeObservation]) ?? [])
-                .compactMap(\.payloadStringValue)
-            DispatchQueue.main.async { completion(payloads) }
-        }
-        perform(request, on: image) {
-            if !done { DispatchQueue.main.async { completion([]) } }
+        run(VNDetectBarcodesRequest(), on: image) { (found: [VNBarcodeObservation]) in
+            completion(found.compactMap(\.payloadStringValue))
         }
     }
 
@@ -66,53 +48,35 @@ enum VisionTools {
 
     static func detectFaces(in image: CGImage,
                             completion: @escaping ([CGRect]) -> Void) {
-        var done = false
-        let request = VNDetectFaceRectanglesRequest { req, _ in
-            done = true
+        run(VNDetectFaceRectanglesRequest(), on: image) { (found: [VNFaceObservation]) in
             let w = CGFloat(image.width), h = CGFloat(image.height)
-            let rects = ((req.results as? [VNFaceObservation]) ?? []).map { obs -> CGRect in
+            completion(found.map { obs in
                 let bb = obs.boundingBox
                 return CGRect(x: bb.minX * w, y: bb.minY * h,
                               width: bb.width * w, height: bb.height * h)
                     .insetBy(dx: -bb.width * w * 0.1, dy: -bb.height * h * 0.1)
-            }
-            DispatchQueue.main.async { completion(rects) }
-        }
-        perform(request, on: image) {
-            if !done { DispatchQueue.main.async { completion([]) } }
+            })
         }
     }
 
     // MARK: - PII detection (regex over OCR words)
 
-    static let piiPatterns: [(String, NSRegularExpression)] = {
-        let sources = [
-            ("email", #"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"#),
-            ("phone", #"\+?\d[\d ()\-]{7,}\d"#),
-            ("card", #"(?:\d[ -]?){13,19}"#),
-            ("ssn", #"\d{3}-\d{2}-\d{4}"#),
-            ("apikey", #"(?:sk|pk|ghp|gho|xox[bap]|AKIA|AIza)[A-Za-z0-9_\-]{10,}"#),
-            ("token", #"[A-Za-z0-9+/_\-]{32,}={0,2}"#),
-        ]
-        return sources.compactMap { name, pat in
-            (try? NSRegularExpression(pattern: pat)).map { (name, $0) }
-        }
-    }()
+    // email, phone, card, SSN, API key, token
+    static let piiPatterns = [
+        #/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/#,
+        #/\+?\d[\d ()\-]{7,}\d/#,
+        #/(?:\d[ -]?){13,19}/#,
+        #/\d{3}-\d{2}-\d{4}/#,
+        #/(?:sk|pk|ghp|gho|xox[bap]|AKIA|AIza)[A-Za-z0-9_\-]{10,}/#,
+        #/[A-Za-z0-9+/_\-]{32,}={0,2}/#,
+    ]
 
+    // whole words only, so ordinary text next to a match stays readable
     static func findPII(in words: [OCRWord]) -> [CGRect] {
-        var out: [CGRect] = []
-        for word in words {
-            let range = NSRange(word.text.startIndex..., in: word.text)
-            for (_, regex) in piiPatterns
-            where regex.firstMatch(in: word.text, range: range).map({
-                // whole-word match only, to avoid censoring ordinary text
-                $0.range.length >= range.length - 2
-            }) == true {
-                out.append(word.box.insetBy(dx: -3, dy: -3))
-                break
-            }
-        }
-        return out
+        words.filter { word in
+            let bare = word.text.trimmingCharacters(in: .punctuationCharacters)
+            return piiPatterns.contains { bare.wholeMatch(of: $0) != nil }
+        }.map { $0.box.insetBy(dx: -3, dy: -3) }
     }
 
     // MARK: - background removal (macOS 14+)
@@ -159,17 +123,13 @@ enum VisionTools {
         return CIContext().createCGImage(out, from: ci.extent)
     }
 
-    // onFailure runs when perform throws before the request callback fired,
-    // so callers always get their completion.
-    private static func perform(_ request: VNRequest, on image: CGImage,
-                                onFailure: @escaping () -> Void) {
+    // perform() fills request.results before it returns; a throw leaves them empty
+    private static func run<T: VNObservation>(_ request: VNRequest, on image: CGImage,
+                                              completion: @escaping ([T]) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let handler = VNImageRequestHandler(cgImage: image)
-            do {
-                try handler.perform([request])
-            } catch {
-                onFailure()
-            }
+            try? VNImageRequestHandler(cgImage: image).perform([request])
+            let found = (request.results as? [T]) ?? []
+            DispatchQueue.main.async { completion(found) }
         }
     }
 }

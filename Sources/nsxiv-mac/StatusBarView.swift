@@ -12,9 +12,12 @@ final class StatusBarView: NSView {
         NSColor.separatorColor.setFill()
         CGRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1).fill()
 
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingHead // "…name", like nsxiv's statusbar
         let attrs: [NSAttributedString.Key: Any] = [
             .font: Config.barFont,
             .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: style,
         ]
         let pad: CGFloat = 8
         let right = NSAttributedString(string: rightText, attributes: attrs)
@@ -22,14 +25,9 @@ final class StatusBarView: NSView {
         let y = (bounds.height - rightSize.height) / 2
         right.draw(at: CGPoint(x: bounds.width - rightSize.width - pad, y: y))
 
-        let maxLeft = bounds.width - rightSize.width - pad * 3
-        var leftStr = leftText
-        var left = NSAttributedString(string: leftStr, attributes: attrs)
-        // truncate with ellipsis like nsxiv's statusbar
-        while left.size().width > maxLeft, leftStr.count > 1 {
-            leftStr = "…" + leftStr.dropFirst(2)
-            left = NSAttributedString(string: leftStr, attributes: attrs)
-        }
-        left.draw(at: CGPoint(x: pad, y: y))
+        // draw(in:) lays the line out from the rect's top edge; -y puts that edge at y + line height
+        let leftRect = CGRect(x: pad, y: -y, width: bounds.width - rightSize.width - pad * 3,
+                              height: bounds.height)
+        NSAttributedString(string: leftText, attributes: attrs).draw(in: leftRect)
     }
 }

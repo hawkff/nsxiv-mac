@@ -8,7 +8,7 @@ third-party dependencies. Requires macOS 13 or later.
 
 - Image mode: zoom, pan, rotate, flip, gamma and contrast correction
 - Window in the style of mpv: the image fills it, the title bar fades in at the top edge
-- Thumbnail grid with a disk cache in `~/Library/Caches/nsxiv-mac`
+- Thumbnail grid; QuickLook renders and caches the thumbnails, `-p` bypasses that cache
 - Plays animated GIF, APNG, and WebP; steps through single frames
 - Reloads the image when the file changes on disk
 - Marks for batch workflows; `-o` prints marked files on exit
