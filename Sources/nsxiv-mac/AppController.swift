@@ -307,9 +307,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 out = f.outputImage ?? out
             }
         }
-        let ctx = CIContext()
-        return ctx.createCGImage(out, from: CGRect(x: 0, y: 0,
-                                                   width: img.width, height: img.height))
+        return CIContext.shared.createCGImage(out, from: CGRect(x: 0, y: 0,
+                                                                width: img.width, height: img.height))
     }
 
     private func gammaValue() -> Double {

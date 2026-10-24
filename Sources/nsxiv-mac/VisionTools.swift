@@ -108,7 +108,7 @@ enum VisionTools {
                     f.setValue(CIImage.empty(), forKey: kCIInputBackgroundImageKey)
                     f.setValue(mask, forKey: kCIInputMaskImageKey)
                     if let out = f.outputImage {
-                        result = CIContext().createCGImage(out, from: src.extent)
+                        result = CIContext.shared.createCGImage(out, from: src.extent)
                     }
                 }
             } catch {
@@ -125,7 +125,7 @@ enum VisionTools {
         guard let f = CIFilter(name: "CIColorInvert") else { return nil }
         f.setValue(ci, forKey: kCIInputImageKey)
         guard let out = f.outputImage else { return nil }
-        return CIContext().createCGImage(out, from: ci.extent)
+        return CIContext.shared.createCGImage(out, from: ci.extent)
     }
 
     // perform() fills request.results before it returns; a throw leaves them empty
