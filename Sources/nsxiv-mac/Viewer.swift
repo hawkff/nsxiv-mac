@@ -142,6 +142,16 @@ final class Viewer {
         return (entry.url.lastPathComponent, right)
     }
 
+    // the status bar's right part in a bar too narrow for it: whole " | " fields drop from the
+    // front, so the index, rightmost, stays longest
+    static func fittedStatus(_ right: String, room: CGFloat, width: (String) -> CGFloat) -> String {
+        var fields = Substring(right)
+        while width(String(fields)) > room, let cut = fields.range(of: " | ") {
+            fields = fields[cut.upperBound...]
+        }
+        return String(fields)
+    }
+
     // MARK: - window and mouse events
 
     func resizeCanvas(_ size: CGSize) {

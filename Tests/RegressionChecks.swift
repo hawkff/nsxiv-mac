@@ -66,6 +66,11 @@ struct RegressionChecks {
                "removal must keep indices on their files")
         assert(Viewer.remap(2, kept: [0, 1]) == 1, "removing the last file must land on the new last")
 
+        let status = "200x200 | 100% | 2/4"
+        func fitted(_ room: CGFloat) -> String { Viewer.fittedStatus(status, room: room) { CGFloat($0.count) } }
+        assert(fitted(20) == status && fitted(19) == "100% | 2/4" && fitted(9) == "2/4" && fitted(2) == "2/4",
+               "a narrow bar drops status fields from the front and keeps the index")
+
         checkBindings(files: (0..<5).map { _ in FileEntry(path: imageURL.path) })
         #if os(macOS)
         try checkWindows(imageURL: imageURL)

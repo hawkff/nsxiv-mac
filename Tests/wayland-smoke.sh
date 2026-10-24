@@ -37,14 +37,30 @@ for _ in $(seq 100); do
 done
 WAYLAND_DISPLAY=$(basename "$socket")
 export WAYLAND_DISPLAY
+unset SWAYSOCK # a sway session running the test has its own
+for _ in $(seq 100); do
+    for candidate in "$XDG_RUNTIME_DIR"/sway-ipc.*.sock; do [ -S "$candidate" ] && SWAYSOCK=$candidate; done
+    [ -n "${SWAYSOCK:-}" ] && break
+    sleep 0.1
+done
+[ -n "${SWAYSOCK:-}" ] || { echo "sway opened no IPC socket" >&2; exit 1; }
+export SWAYSOCK # the viewer places its floating window through sway's IPC
 unset DISPLAY # a Wayland window, not an X one through XWayland
 
 shot() { sleep 1; grim "$shots/$1.png"; }
 # the floating window takes each image's size; sway's geometry field keeps the first one
 expect_width() {
-    width=$(SWAYSOCK=$(echo "$XDG_RUNTIME_DIR"/sway-ipc.*.sock) swaymsg -t get_tree |
-        jq '.. | objects | select(.app_id == "nsxiv-mac") | .window_rect.width')
+    width=$(swaymsg -t get_tree | jq '.. | objects | select(.app_id == "nsxiv-mac") | .window_rect.width')
     [ "$width" = "$1" ] || { echo "window is $width wide, expected $1" >&2; exit 1; }
+}
+# the whole window stays inside the workspace, sway's title bar included: like i3, sway
+# reports that bar as deco_rect, above rect
+expect_inside() {
+    swaymsg -t get_tree | jq -e '[.. | objects | select(.type == "workspace" and .name == "1") | .rect] as [$w]
+        | .. | objects | select(.app_id == "nsxiv-mac") | .deco_rect.height as $t | .rect
+        | .x >= $w.x and .y - $t >= $w.y and .x + .width <= $w.x + $w.width and .y + .height <= $w.y + $w.height' \
+        >/dev/null || { echo "window left the workspace: $(swaymsg -t get_tree | jq -c '.. | objects |
+            select(.app_id == "nsxiv-mac" or .type == "workspace") | [.rect, .deco_rect]')" >&2; exit 1; }
 }
 # each wtype plugs in a new virtual keyboard; the pause lets the client bind it first
 key() { wtype -s 300 "$@"; }
@@ -53,7 +69,7 @@ timeout 60 "$bin" -o "$pics" >"$pics/marked" & # a viewer that misses q fails th
 pid=$!
 sleep 2
 shot 1-image
-key '>' && shot 2-turned
+key '>' && shot 2-turned && expect_inside
 key j && shot 3-alpha && expect_width 200
 key A && shot 4-checkerboard
 key j && shot 5-animated
@@ -61,7 +77,7 @@ key f && shot 6-fullscreen
 key f && sleep 1
 key g m m -k Return
 sleep 2
-shot 7-grid
+shot 7-grid && expect_inside
 key -M ctrl x -m ctrl c
 sleep 1
 key q

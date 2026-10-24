@@ -21,7 +21,10 @@ final class StatusBarView: NSView {
             .paragraphStyle: style,
         ]
         let pad: CGFloat = 8
-        let right = NSAttributedString(string: rightText, attributes: attrs)
+        let fitted = Viewer.fittedStatus(rightText, room: bounds.width - pad * 2) {
+            NSAttributedString(string: $0, attributes: attrs).size().width
+        }
+        let right = NSAttributedString(string: fitted, attributes: attrs)
         let rightSize = right.size()
         let y = (bounds.height - rightSize.height) / 2
         right.draw(at: CGPoint(x: bounds.width - rightSize.width - pad, y: y))
