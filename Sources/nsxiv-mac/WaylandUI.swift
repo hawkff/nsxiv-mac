@@ -18,6 +18,7 @@ final class WaylandUI: ViewerUI {
     private var seat: OpaquePointer?
     private var seatVersion: UInt32 = 0
     private var decorations: OpaquePointer?
+    private var csd = false // no server-side decorations, as on GNOME: the window draws a title bar
     private var fractionalScaling: OpaquePointer?
     private var viewporter: OpaquePointer?
     private var outputs: [OpaquePointer: Output] = [:]
@@ -65,7 +66,12 @@ final class WaylandUI: ViewerUI {
     private var cursorTheme: OpaquePointer?
     private var cursorSurface: OpaquePointer?
     private var cursorScale: Int32 = 0
-    private var cursorHotspot = (x: Int32(0), y: Int32(0))
+    private var cursorName = "default"
+    private var cursorShown = false // an enter or a new scale wants the cursor set again
+    private var lastTitleClick: UInt32?
+    private let sway = ProcessInfo.processInfo.environment["SWAYSOCK"] != nil
+    private var swayRoom: CGSize? // what a floating window's content may take in its sway workspace
+    private var swayFrom: CGSize? // the size before a burst of resizes, until sway places the window
 
     private final class Output {
         var mode = (width: Int32(0), height: Int32(0)) // pixels
@@ -102,9 +108,12 @@ final class WaylandUI: ViewerUI {
         xdg_toplevel_set_title(toplevel, Config.appName)
         xdg_toplevel_set_app_id(toplevel, Config.appName)
         if let decorations {
-            // KDE and sway draw a title bar, niri a border; GNOME has client-side ones only
+            // KDE and sway draw a title bar, niri a border; the reply says whether they will
             let decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(decorations, toplevel)
+            zxdg_toplevel_decoration_v1_add_listener(decoration, Self.decorationListener, data)
             zxdg_toplevel_decoration_v1_set_mode(decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE.rawValue)
+        } else {
+            csd = true // GNOME and Weston leave decorations to the client
         }
         if let fractionalScaling, let viewporter {
             let fractional = wp_fractional_scale_manager_v1_get_fractional_scale(fractionalScaling, surface)
@@ -203,7 +212,10 @@ final class WaylandUI: ViewerUI {
 
     private var fullscreen: Bool { states.contains(XDG_TOPLEVEL_STATE_FULLSCREEN.rawValue) }
     private var barHeight: Int { viewer.barVisible ? renderer.barHeight : 0 }
-    private var canvasHeight: Int { max(0, size.height - barHeight) }
+    // the title bar the window draws without server-side decorations, as tall as the status bar
+    private var titleHeight: Int { csd && !fullscreen ? renderer.barHeight : 0 }
+    private var chrome: Int { titleHeight + barHeight } // the rows that are not canvas
+    private var canvasHeight: Int { max(0, size.height - chrome) }
 
     // pixels per logical unit
     private var scale: Double {
@@ -211,10 +223,11 @@ final class WaylandUI: ViewerUI {
         return Double(enteredOutputs.compactMap { outputs[$0]?.scale }.max() ?? 1)
     }
 
-    // where the window may grow: the compositor's bounds, else the largest output, divided
-    // by the fractional scale once it came (wl_output rounds 1.5 up to 2)
+    // where the window may grow: the compositor's bounds, sway's workspace, else the largest
+    // output, divided by the fractional scale once it came (wl_output rounds 1.5 up to 2)
     private var maxSize: CGSize {
         if let bounds { return CGSize(width: Int(bounds.width), height: Int(bounds.height)) }
+        if let swayRoom { return swayRoom }
         let fractional = viewport != nil && scale120 != 120 ? Double(scale120) / 120 : nil
         let sizes = outputs.values.map { output -> CGSize in
             let s = fractional ?? Double(max(1, output.scale))
@@ -231,7 +244,7 @@ final class WaylandUI: ViewerUI {
     ].map(\.rawValue))
 
     private func configure(_ serial: UInt32) {
-        let wasFullscreen = fullscreen
+        let wasFullscreen = fullscreen, oldChrome = chrome
         states = Set(pendingStates)
         let asked = CGSize(width: Int(requested.width), height: Int(requested.height))
         if states.contains(XDG_TOPLEVEL_STATE_RESIZING.rawValue), asked.width > 0, asked.height > 0 {
@@ -248,27 +261,33 @@ final class WaylandUI: ViewerUI {
         configured = true
         if wasFullscreen, !fullscreen { fitWindow() }
         applySize()
+        if chrome != oldChrome { layoutChanged() } // the title bar goes with fullscreen
+        if swayRoom == nil { swayResized(from: CGSize(width: size.width, height: size.height)) }
         render() // every configure wants a commit, even one that changes nothing
     }
 
     // the compositor's size where it gives one, the viewer's where it leaves one open
     private func applySize() {
         var w = CGFloat(requested.width), h = CGFloat(requested.height)
-        let barH = CGFloat(barHeight)
+        let rows = CGFloat(chrome)
         if let image = viewer.fittedSize, image.width > 0, image.height > 0 {
             // one side given and one open, as in a niri column: hug the image at the zoom it
             // will get, which the default scale mode keeps at 100% or less
             let upTo = { (zoom: CGFloat) in self.viewer.viewport.scaleMode == .down ? min(1, zoom) : zoom }
-            if w == 0, h > barH { w = min(maxSize.width, (image.width * upTo((h - barH) / image.height)).rounded()) }
-            if h == 0, w > 0 { h = min(maxSize.height, (image.height * upTo(w / image.width)).rounded() + barH) }
+            if w == 0, h > rows { w = min(maxSize.width, (image.width * upTo((h - rows) / image.height)).rounded()) }
+            if h == 0, w > 0 { h = min(maxSize.height, (image.height * upTo(w / image.width)).rounded() + rows) }
         }
         // the 800x600 default overflows 1280x800 at scale 1.5
         if w == 0 { w = min(wanted.width, maxSize.width.rounded(.down)) }
         if h == 0 { h = min(wanted.height, maxSize.height.rounded(.down)) }
         let width = max(1, Int(w)), height = max(1, Int(h))
         guard width != size.width || height != size.height else { return }
+        let old = CGSize(width: size.width, height: size.height)
         size = (width, height)
-        if requested.width == 0, requested.height == 0 { remember(CGSize(width: width, height: height)) }
+        if requested.width == 0, requested.height == 0 {
+            remember(CGSize(width: width, height: height))
+            if old.width > 0 { swayResized(from: old) }
+        }
         layoutChanged()
     }
 
@@ -298,7 +317,7 @@ final class WaylandUI: ViewerUI {
     func layoutChanged() {
         let width = size.width > 0 ? size.width : Int(wanted.width)
         let height = size.height > 0 ? size.height : Int(wanted.height)
-        let canvas = CGSize(width: width, height: max(0, height - barHeight))
+        let canvas = CGSize(width: width, height: max(0, height - chrome))
         viewer.resizeCanvas(canvas)
         viewer.resizeGrid(canvas)
         setNeedsRedraw()
@@ -311,7 +330,7 @@ final class WaylandUI: ViewerUI {
 
     func fitWindow() {
         guard let image = viewer.fittedSize, image.width > 0, image.height > 0 else { return }
-        let barH = CGFloat(barHeight), limit = maxSize
+        let barH = CGFloat(chrome), limit = maxSize
         let fit = min(1, limit.width / image.width, (limit.height - barH) / image.height)
         wanted = CGSize(width: (image.width * fit).rounded(), height: (image.height * fit).rounded() + barH)
         if configured, !fullscreen { applySize() }
@@ -359,7 +378,11 @@ final class WaylandUI: ViewerUI {
             waitingForBuffer = true // drawn when the compositor hands a buffer back
             return
         }
-        renderer.render(into: buffer.image, width: w, height: h, scale: s)
+        let top = min(Int((Double(titleHeight) * s).rounded()), h - 1)
+        renderer.render(into: buffer.image(below: top), width: w, height: h - top, scale: s)
+        if top > 0 {
+            renderer.renderTitle(title.isEmpty ? Config.appName : title, into: buffer.image, width: w, height: top, scale: s)
+        }
         if let viewport {
             wp_viewport_set_destination(viewport, Int32(size.width), Int32(size.height))
         } else {
@@ -384,7 +407,8 @@ final class WaylandUI: ViewerUI {
     }
 
     private func scaleChanged() {
-        loadCursor()
+        cursorShown = false
+        setCursor(cursorName)
         fitWindow() // the screen's logical size may have changed with the scale
         setNeedsRedraw()
     }
@@ -420,7 +444,27 @@ final class WaylandUI: ViewerUI {
             wl_buffer_add_listener(buffer, Self.listener, Unmanaged.passUnretained(self).toOpaque())
         }
 
+        // Imlib2's view of the rows below a title bar, made when a title bar first needs it
+        private var below: (top: Int, image: Imlib_Image)?
+
+        func image(below top: Int) -> Imlib_Image {
+            guard top > 0 else { return image }
+            if let below, below.top == top { return below.image }
+            if let below {
+                imlib_context_set_image(below.image)
+                imlib_free_image()
+            }
+            let rows = imlib_create_image_using_data(Int32(width), Int32(height - top),
+                                                     (pixels + top * width * 4).assumingMemoryBound(to: UInt32.self))
+            below = (top, rows)
+            return rows
+        }
+
         deinit {
+            if let below {
+                imlib_context_set_image(below.image)
+                imlib_free_image()
+            }
             imlib_context_set_image(image)
             imlib_free_image() // leaves the mapped pixels to munmap
             wl_buffer_destroy(buffer)
@@ -492,27 +536,28 @@ final class WaylandUI: ViewerUI {
     private func pointerEntered(_ serial: UInt32, at p: CGPoint) {
         pointerSerial = serial
         pointerAt = p
-        if cursorScale == 0 { loadCursor() }
-        setCursor()
+        cursorShown = false
+        setCursor(cursor(at: p))
     }
 
-    private func setCursor() {
-        guard let pointer, let cursorSurface, pointerSerial != 0 else { return }
-        wl_pointer_set_cursor(pointer, pointerSerial, cursorSurface, cursorHotspot.x, cursorHotspot.y)
-    }
-
-    // the theme's arrow at the window's scale; a client draws its own cursor on Wayland
-    private func loadCursor() {
-        guard let shm, let compositor else { return }
+    // a client draws its own cursor on Wayland: the theme's, at the window's scale
+    private func setCursor(_ name: String) {
+        if name != cursorName {
+            cursorName = name
+            cursorShown = false
+        }
+        guard !cursorShown, let shm, let compositor, let pointer, pointerSerial != 0 else { return }
         let scale = Int32(self.scale.rounded(.up))
-        guard scale != cursorScale else { return }
-        cursorScale = scale
-        let env = ProcessInfo.processInfo.environment
-        let size = env["XCURSOR_SIZE"].flatMap { Int32($0) } ?? 24
-        if let cursorTheme { wl_cursor_theme_destroy(cursorTheme) }
-        cursorTheme = wl_cursor_theme_load(env["XCURSOR_THEME"], size * scale, shm)
+        if scale != cursorScale || cursorTheme == nil {
+            cursorScale = scale
+            let env = ProcessInfo.processInfo.environment
+            let size = env["XCURSOR_SIZE"].flatMap { Int32($0) } ?? 24
+            if let cursorTheme { wl_cursor_theme_destroy(cursorTheme) }
+            cursorTheme = wl_cursor_theme_load(env["XCURSOR_THEME"], size * scale, shm)
+        }
         guard let cursorTheme,
-              let cursor = wl_cursor_theme_get_cursor(cursorTheme, "default")
+              let cursor = wl_cursor_theme_get_cursor(cursorTheme, name)
+                ?? wl_cursor_theme_get_cursor(cursorTheme, "default")
                 ?? wl_cursor_theme_get_cursor(cursorTheme, "left_ptr"),
               let image = cursor.pointee.images[0], let buffer = wl_cursor_image_get_buffer(image) else { return }
         if cursorSurface == nil { cursorSurface = wl_compositor_create_surface(compositor) }
@@ -520,14 +565,77 @@ final class WaylandUI: ViewerUI {
         wl_surface_attach(cursorSurface, buffer, 0, 0)
         wl_surface_damage_buffer(cursorSurface, 0, 0, Int32.max, Int32.max)
         wl_surface_commit(cursorSurface)
-        cursorHotspot = (Int32(image.pointee.hotspot_x) / scale, Int32(image.pointee.hotspot_y) / scale)
-        setCursor()
+        wl_pointer_set_cursor(pointer, pointerSerial, cursorSurface,
+                              Int32(image.pointee.hotspot_x) / scale, Int32(image.pointee.hotspot_y) / scale)
+        cursorShown = true
     }
 
-    private func button(_ button: UInt32, pressed: Bool, time: UInt32) {
-        let left: UInt32 = 0x110, right: UInt32 = 0x111 // BTN_LEFT, BTN_RIGHT from linux/input-event-codes.h
-        let p = pointerAt
-        let inCanvas = Int(p.y) < canvasHeight
+    // BTN_LEFT and BTN_RIGHT from linux/input-event-codes.h
+    private static let leftButton: UInt32 = 0x110
+    private static let rightButton: UInt32 = 0x111
+
+    // the edges of a floating window with its own decorations near p, as resize_edge bits
+    private func edges(at p: CGPoint) -> UInt32 {
+        guard csd, states.isDisjoint(with: Self.heldStates) else { return 0 }
+        let e: CGFloat = 6, w = CGFloat(size.width), h = CGFloat(size.height)
+        var edges: UInt32 = 0
+        if p.y < e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_TOP.rawValue }
+        if p.y >= h - e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM.rawValue }
+        if p.x < e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_LEFT.rawValue }
+        if p.x >= w - e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_RIGHT.rawValue }
+        return edges
+    }
+
+    // the names libwayland-cursor's own theme has too
+    private static let edgeCursors: [UInt32: String] = [
+        XDG_TOPLEVEL_RESIZE_EDGE_TOP.rawValue: "top_side",
+        XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM.rawValue: "bottom_side",
+        XDG_TOPLEVEL_RESIZE_EDGE_LEFT.rawValue: "left_side",
+        XDG_TOPLEVEL_RESIZE_EDGE_RIGHT.rawValue: "right_side",
+        XDG_TOPLEVEL_RESIZE_EDGE_TOP_LEFT.rawValue: "top_left_corner",
+        XDG_TOPLEVEL_RESIZE_EDGE_TOP_RIGHT.rawValue: "top_right_corner",
+        XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_LEFT.rawValue: "bottom_left_corner",
+        XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM_RIGHT.rawValue: "bottom_right_corner",
+    ]
+
+    private func cursor(at p: CGPoint) -> String { Self.edgeCursors[edges(at: p)] ?? "default" }
+
+    // a press on the title bar or an edge the window draws itself: the compositor moves or
+    // resizes the window, or shows its window menu
+    private func decorationPressed(_ button: UInt32, at p: CGPoint, time: UInt32, serial: UInt32) -> Bool {
+        guard let seat else { return false }
+        let edges = edges(at: p)
+        guard button == Self.leftButton && edges != 0 || p.y < CGFloat(titleHeight) else { return false }
+        switch button {
+        case Self.leftButton where edges != 0:
+            xdg_toplevel_resize(toplevel, seat, serial, edges)
+        case Self.rightButton:
+            xdg_toplevel_show_window_menu(toplevel, seat, serial, Int32(p.x), Int32(p.y))
+        case Self.leftButton where p.x >= CGFloat(size.width - titleHeight):
+            viewer.quit() // the close button
+        case Self.leftButton:
+            if let last = lastTitleClick, time &- last < 400 {
+                lastTitleClick = nil
+                if states.contains(XDG_TOPLEVEL_STATE_MAXIMIZED.rawValue) {
+                    xdg_toplevel_unset_maximized(toplevel)
+                } else {
+                    xdg_toplevel_set_maximized(toplevel)
+                }
+            } else {
+                lastTitleClick = time
+                xdg_toplevel_move(toplevel, seat, serial)
+            }
+        default: break
+        }
+        wl_display_flush(display)
+        return true
+    }
+
+    private func button(_ button: UInt32, pressed: Bool, time: UInt32, serial: UInt32) {
+        if pressed, decorationPressed(button, at: pointerAt, time: time, serial: serial) { return }
+        let left = Self.leftButton, right = Self.rightButton
+        let p = CGPoint(x: pointerAt.x, y: pointerAt.y - CGFloat(titleHeight)) // canvas coordinates
+        let inCanvas = p.y >= 0 && Int(p.y) < canvasHeight
         switch (button, pressed) {
         case (left, true) where !viewer.thumbnailMode:
             dragging = true
@@ -564,6 +672,7 @@ final class WaylandUI: ViewerUI {
 
     private func pointerMoved(to p: CGPoint) {
         defer { pointerAt = p }
+        setCursor(cursor(at: p))
         guard dragging, !viewer.thumbnailMode else { return }
         dragged = true
         viewer.pan(dx: p.x - pointerAt.x, dy: pointerAt.y - p.y) // the surface counts y downward
@@ -589,6 +698,84 @@ final class WaylandUI: ViewerUI {
             let steps = scroll.steps != 0 ? Int(scroll.steps) : (scroll.dy > 0 ? 1 : -1)
             for _ in 0..<abs(steps) { viewer.zoomStep(steps > 0 ? -1 : 1) } // down zooms out
         }
+    }
+
+    // MARK: - sway
+
+    // sway keeps a floating window's top-left corner when the window resizes itself and sends
+    // no configure_bounds, so a growing window ran off the screen. Its IPC can do what the
+    // macOS side does: keep the window's center, keep it inside the workspace, and cap the
+    // size to the workspace. A burst of resizes gets one placement.
+    private func swayResized(from old: CGSize) {
+        guard sway, swayFrom == nil, states.isDisjoint(with: Self.heldStates) else { return }
+        swayFrom = old
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [self] in
+            guard let from = swayFrom else { return }
+            swayFrom = nil
+            let to = CGSize(width: size.width, height: size.height), pid = Int(getpid())
+            Self.swayQueue.async {
+                let room = Self.swayPlace(pid: pid, from: from, to: to)
+                DispatchQueue.main.async { [self] in
+                    guard let room, room != swayRoom else { return }
+                    swayRoom = room
+                    fitWindow()
+                    if configured, !fullscreen { applySize() } // the grid's size too
+                }
+            }
+        }
+    }
+
+    private static let swayQueue = DispatchQueue(label: "sway-ipc")
+
+    // moves the window of pid in sway's tree; returns the room for content in its workspace
+    private static func swayPlace(pid: Int, from old: CGSize, to new: CGSize) -> CGSize? {
+        guard let tree = swaymsg("-t", "get_tree") as? [String: Any],
+              let found = swayFind(pid: pid, in: tree, workspace: nil),
+              found.node["type"] as? String == "floating_con", let id = found.node["id"] as? Int,
+              let frame = swayRect(found.node["rect"]), let content = swayRect(found.node["window_rect"])
+        else { return nil }
+        let space = found.workspace
+        // sway's title bar and borders; the top-left corner is still where it was before the resize
+        let deco = CGSize(width: frame.width - content.width, height: frame.height - content.height)
+        let outer = CGSize(width: new.width + deco.width, height: new.height + deco.height)
+        let cx = frame.minX + (old.width + deco.width) / 2, cy = frame.minY + (old.height + deco.height) / 2
+        let x = Int(max(space.minX, min(cx - outer.width / 2, space.maxX - outer.width)))
+        let y = Int(max(space.minY, min(cy - outer.height / 2, space.maxY - outer.height)))
+        if x != Int(frame.minX) || y != Int(frame.minY) {
+            _ = swaymsg("[con_id=\(id)] move absolute position \(x) \(y)")
+        }
+        return CGSize(width: space.width - deco.width, height: space.height - deco.height)
+    }
+
+    private static func swayFind(pid: Int, in node: [String: Any],
+                                 workspace: CGRect?) -> (node: [String: Any], workspace: CGRect)? {
+        let workspace = node["type"] as? String == "workspace" ? swayRect(node["rect"]) : workspace
+        if node["pid"] as? Int == pid, let workspace { return (node, workspace) }
+        let children = (node["nodes"] as? [[String: Any]] ?? []) + (node["floating_nodes"] as? [[String: Any]] ?? [])
+        for child in children {
+            if let found = swayFind(pid: pid, in: child, workspace: workspace) { return found }
+        }
+        return nil
+    }
+
+    private static func swayRect(_ value: Any?) -> CGRect? {
+        guard let r = value as? [String: Any], let x = r["x"] as? Int, let y = r["y"] as? Int,
+              let w = r["width"] as? Int, let h = r["height"] as? Int else { return nil }
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    // sway's own client speaks its IPC, at the socket SWAYSOCK names
+    private static func swaymsg(_ args: String...) -> Any? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["swaymsg", "-r"] + args
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return try? JSONSerialization.jsonObject(with: data)
     }
 
     // MARK: - listeners
@@ -653,6 +840,16 @@ final class WaylandUI: ViewerUI {
     private static let wmBaseListener = make(xdg_wm_base_listener(
         ping: { _, base, serial in xdg_wm_base_pong(base, serial) }))
 
+    private static let decorationListener = make(zxdg_toplevel_decoration_v1_listener(
+        configure: { data, _, mode in
+            let ui = WaylandUI.ui(data)
+            let csd = mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE.rawValue
+            guard csd != ui.csd else { return }
+            ui.csd = csd
+            ui.fitWindow() // the title bar takes rows from the image
+            ui.layoutChanged()
+        }))
+
     private static let xdgSurfaceListener = make(xdg_surface_listener(
         configure: { data, _, serial in WaylandUI.ui(data).configure(serial) }))
 
@@ -709,8 +906,9 @@ final class WaylandUI: ViewerUI {
         l.motion = { data, _, _, x, y in
             WaylandUI.ui(data).pointerMoved(to: CGPoint(x: wl_fixed_to_double(x), y: wl_fixed_to_double(y)))
         }
-        l.button = { data, _, _, time, button, state in
-            WaylandUI.ui(data).button(button, pressed: state == WL_POINTER_BUTTON_STATE_PRESSED.rawValue, time: time)
+        l.button = { data, _, serial, time, button, state in
+            WaylandUI.ui(data).button(button, pressed: state == WL_POINTER_BUTTON_STATE_PRESSED.rawValue,
+                                      time: time, serial: serial)
         }
         l.axis = { data, _, _, axis, value in WaylandUI.ui(data).axis(axis, wl_fixed_to_double(value)) }
         l.frame = { data, _ in WaylandUI.ui(data).axisFrame() }

@@ -392,11 +392,28 @@ final class ImlibRenderer {
         imlib_context_set_font(face)
         let pad = Int((8 * scale).rounded())
         let status = viewer.statusText
-        let right = textSize(status.right)
+        let fitted = Viewer.fittedStatus(status.right, room: CGFloat(width - pad * 2)) { CGFloat(textSize($0).width) }
+        let right = textSize(fitted)
         let top = y + (height - right.height) / 2
-        drawText(status.right, x: width - right.width - pad, y: top)
+        drawText(fitted, x: width - right.width - pad, y: top)
         let left = Self.truncatedHead(status.left, width: width - right.width - pad * 3) { textSize($0).width }
         drawText(left, x: pad, y: top)
+    }
+
+    // the title bar of a window the compositor leaves undecorated, in the status bar's
+    // colors: the title, and a close button in the square at the right end
+    func renderTitle(_ title: String, into canvas: Imlib_Image, width: Int, height: Int, scale: Double) {
+        imlib_context_set_image(canvas)
+        imlib_image_set_has_alpha(0)
+        imlib_context_set_color_modifier(nil)
+        fill(barBackground, 0, 0, width, height)
+        guard let face = loadFont(scale: scale) else { return }
+        imlib_context_set_font(face)
+        let close = textSize("×")
+        drawText("×", x: width - (height + close.width) / 2, y: (height - close.height) / 2)
+        let pad = Int((8 * scale).rounded())
+        let name = Self.truncatedHead(title, width: width - height - pad * 2) { textSize($0).width }
+        drawText(name, x: pad, y: (height - textSize(name).height) / 2)
     }
 
     // "…name", the way nsxiv and the macOS bar cut a long name
