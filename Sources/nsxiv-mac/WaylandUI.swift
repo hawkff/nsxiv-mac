@@ -851,10 +851,12 @@ final class WaylandUI: ViewerUI {
         function unload() {
             callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", plugin);
         }
+        // the work area of the screen the frame was on: an output on Plasma 6, a number on Plasma 5
         function areaAround(r, w) {
-            const output = workspace.screenAt ? workspace.screenAt({ x: r.x + r.width / 2, y: r.y + r.height / 2 }) : null;
-            return output ? workspace.clientArea(KWin.MaximizeArea, output, workspace.currentDesktop)
-                          : workspace.clientArea(KWin.MaximizeArea, w);
+            const output = workspace.screenAt({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+            const found = typeof output === "number" ? output >= 0 : !!output;
+            return found ? workspace.clientArea(KWin.MaximizeArea, output, workspace.currentDesktop)
+                         : workspace.clientArea(KWin.MaximizeArea, w);
         }
 
         // fullscreen, maximized or tiled: KWin, not the viewer, sizes the window

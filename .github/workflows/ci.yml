@@ -70,7 +70,9 @@ jobs:
       - name: Run under Weston, which leaves decorations to the window
         run: sh Tests/weston-smoke.sh .build/release/nsxiv-mac weston-shots
       - name: Run under mutter, where a growing window must stay on screen
-        run: dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac
+        run: |
+          dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac 1
+          dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac 2
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -116,9 +118,34 @@ jobs:
       - name: Run under niri
         run: sh Tests/niri-smoke.sh .build/release/nsxiv-mac niri-shots
       - name: Run under KWin, where a growing window must stay on screen
-        run: dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac
+        run: |
+          dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac 1
+          dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac 2
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: niri-screenshots
           path: niri-shots
+
+  plasma5:
+    runs-on: ubuntu-24.04
+    container: swift:6.4-bookworm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Wayland, Imlib2 and KWin 5.27
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends libx11-dev libimlib2-dev libfontconfig-dev \
+            libwayland-dev libxkbcommon-dev pkg-config imagemagick fonts-dejavu-core kwin-wayland \
+            dbus-daemon dbus-bin
+          # a copy without the file capabilities a container cannot grant
+          install -m755 /usr/bin/kwin_wayland /usr/local/bin/kwin_wayland
+      - name: Build
+        run: swift build -c release --static-swift-stdlib
+      - name: Run under KWin 5.27, where a growing window must stay on screen
+        run: |
+          dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac 1
+          dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac 2
