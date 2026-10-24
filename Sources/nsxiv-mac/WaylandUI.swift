@@ -446,7 +446,7 @@ final class WaylandUI: ViewerUI {
         stopRepeat()
         repeatingKey = code
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        // a busy main queue runs the handler once for every tick it missed, so a held key
+        // GCD folds the ticks a busy main queue missed into one handler call, so a held key
         // cannot pile repeats up behind a slow decode
         timer.schedule(deadline: .now() + .milliseconds(Int(repeatDelay)), repeating: 1 / Double(repeatRate))
         timer.setEventHandler { [unowned self] in self.deliver(code) }

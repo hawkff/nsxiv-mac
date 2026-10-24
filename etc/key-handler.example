@@ -5,13 +5,16 @@
 #          chmod +x ~/.config/nsxiv-mac/exec/key-handler
 #
 # $1 is the key pressed after C-x; selected files arrive on stdin.
-# On Linux the actions use xclip, gio and xdg-open.
+# On Linux the actions use wl-copy (Wayland) or xclip (X11), gio and xdg-open.
 
 mac() { [ "$(uname)" = Darwin ]; }
+wayland() { [ -n "${WAYLAND_DISPLAY:-}" ]; }
 
 case "$1" in
 "c")    # copy file paths to clipboard
-    if mac; then tr '\n' ' ' | pbcopy; else tr '\n' ' ' | xclip -selection clipboard; fi ;;
+    if mac; then tr '\n' ' ' | pbcopy
+    elif wayland; then tr '\n' ' ' | wl-copy
+    else tr '\n' ' ' | xclip -selection clipboard; fi ;;
 "y")    # copy the first image itself to clipboard
     read -r file
     if mac; then
@@ -21,6 +24,8 @@ case "$1" in
         || osascript -e 'on run argv' \
             -e 'set the clipboard to (read (POSIX file (item 1 of argv)) as JPEG picture)' \
             -e 'end run' "$file"
+    elif wayland; then
+        wl-copy --type "$(file -b --mime-type "$file")" < "$file"
     else
         xclip -selection clipboard -t "$(file -b --mime-type "$file")" -i "$file"
     fi ;;
