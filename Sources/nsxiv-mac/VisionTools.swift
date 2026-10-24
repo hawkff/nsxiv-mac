@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Vision
 
@@ -138,3 +139,4 @@ enum VisionTools {
         }
     }
 }
+#endif

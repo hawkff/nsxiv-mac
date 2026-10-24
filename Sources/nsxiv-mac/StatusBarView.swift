@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 final class StatusBarView: NSView {
@@ -31,3 +32,4 @@ final class StatusBarView: NSView {
         NSAttributedString(string: leftText, attributes: attrs).draw(in: leftRect)
     }
 }
+#endif

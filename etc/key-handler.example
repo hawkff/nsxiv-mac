@@ -5,25 +5,36 @@
 #          chmod +x ~/.config/nsxiv-mac/exec/key-handler
 #
 # $1 is the key pressed after C-x; selected files arrive on stdin.
+# On Linux the actions use xclip, gio and xdg-open.
+
+mac() { [ "$(uname)" = Darwin ]; }
 
 case "$1" in
 "c")    # copy file paths to clipboard
-    tr '\n' ' ' | pbcopy ;;
+    if mac; then tr '\n' ' ' | pbcopy; else tr '\n' ' ' | xclip -selection clipboard; fi ;;
 "y")    # copy the first image itself to clipboard
     read -r file
-    osascript -e 'on run argv' \
-        -e 'set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)' \
-        -e 'end run' "$file" 2>/dev/null \
-    || osascript -e 'on run argv' \
-        -e 'set the clipboard to (read (POSIX file (item 1 of argv)) as JPEG picture)' \
-        -e 'end run' "$file" ;;
+    if mac; then
+        osascript -e 'on run argv' \
+            -e 'set the clipboard to (read (POSIX file (item 1 of argv)) as «class PNGf»)' \
+            -e 'end run' "$file" 2>/dev/null \
+        || osascript -e 'on run argv' \
+            -e 'set the clipboard to (read (POSIX file (item 1 of argv)) as JPEG picture)' \
+            -e 'end run' "$file"
+    else
+        xclip -selection clipboard -t "$(file -b --mime-type "$file")" -i "$file"
+    fi ;;
 "t")    # move to trash
     while read -r file; do
-        osascript -e 'on run argv' \
-            -e 'tell app "Finder" to delete POSIX file (item 1 of argv)' \
-            -e 'end run' "$file" >/dev/null
+        if mac; then
+            osascript -e 'on run argv' \
+                -e 'tell app "Finder" to delete POSIX file (item 1 of argv)' \
+                -e 'end run' "$file" >/dev/null
+        else
+            gio trash "$file"
+        fi
     done ;;
-"r")    # reveal in Finder
+"r")    # reveal in the file manager
     read -r file
-    open -R "$file" ;;
+    if mac; then open -R "$file"; else xdg-open "$(dirname "$file")"; fi ;;
 esac

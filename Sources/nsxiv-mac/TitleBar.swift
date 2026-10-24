@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 // Window chrome after mpv's video/out/mac/title_bar.swift: the image fills
@@ -62,3 +63,4 @@ final class TitleBar: NSVisualEffectView {
         }
     }
 }
+#endif

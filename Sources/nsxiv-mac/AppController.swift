@@ -1,44 +1,21 @@
+#if os(macOS)
 import AppKit
 
-final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private let options: Options
-    private var files: [FileEntry]
-    private var current = 0
-    private var alternate = 0
+// The AppKit side of the viewer: window, views, decoding through ImageIO, edit mode.
+final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, ViewerUI {
+    let viewer: Viewer
 
     private var window: NSWindow!
     private var canvas: ImageCanvasView!
     private var grid: ThumbnailGridView!
     private var bar: StatusBarView!
-    private var contentStack: NSView!
-    private var thumbnailMode = false
-    private var barVisible = true
-
     private var image: LoadedImage?
-    private var frameIndex = 0
-    private var animationTimer: Timer?
-    private var animationPlaying = false
-
-    private var slideshowTimer: Timer?
-    private var slideshowDelay: TimeInterval
-
-    private var rotation = 0 // degrees, multiples of 90
-    private var flipH = false
-    private var flipV = false
-    private var gamma = 0
-    private var contrast = 0
-
-    private var fileWatcher: DispatchSourceFileSystemObject?
-    private var prefixExternal = false
     private var editor: EditController?
 
     init(options: Options, files: [FileEntry]) {
-        self.options = options
-        self.files = files
-        self.slideshowDelay = options.slideshow ?? Config.slideshowDelay
-        self.current = max(0, min(files.count - 1, options.startAt - 1))
-        self.alternate = current
+        viewer = Viewer(options: options, files: files)
         super.init()
+        viewer.ui = self
     }
 
     // MARK: - lifecycle
@@ -46,26 +23,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
         buildWindow()
-
-        thumbnailMode = options.thumbnailMode
-        barVisible = !options.noBar
-        if let mode = options.scaleMode { canvas.setScaleMode(mode) }
-
-        updateLayout()
-        if thumbnailMode {
-            grid.select(current)
-        } else {
-            loadCurrent()
-        }
-        if options.fullscreen {
-            window.toggleFullScreen(nil)
-        }
-        if let z = options.zoom {
-            canvas.setZoom(z)
-        }
-        if options.slideshow != nil, !thumbnailMode {
-            startSlideshow()
-        }
+        viewer.start()
 
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self else { return event }
@@ -81,25 +39,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     func applicationWillTerminate(_ notification: Notification) {
-        printMarkedIfNeeded()
-    }
-
-    private func quit(_ code: Int32 = 0) {
-        printMarkedIfNeeded()
-        exit(code)
-    }
-
-    private var markedPrinted = false
-    private func printMarkedIfNeeded() {
-        guard options.outputMarked, !markedPrinted else { return }
-        markedPrinted = true
-        for f in files where f.marked {
-            print(f.path)
-        }
+        viewer.printMarkedIfNeeded()
     }
 
     private func buildWindow() {
-        let size = options.geometry ?? CGSize(width: Config.winWidth, height: Config.winHeight)
+        let size = viewer.options.geometry ?? CGSize(width: Config.winWidth, height: Config.winHeight)
         window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -109,7 +53,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.tabbingMode = .disallowed
         window.center()
 
-        contentStack = NSView()
+        let contentStack = NSView()
         canvas = ImageCanvasView()
         grid = ThumbnailGridView()
         bar = StatusBarView()
@@ -117,27 +61,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             v.translatesAutoresizingMaskIntoConstraints = true
             contentStack.addSubview(v)
         }
-        grid.cache = ThumbnailCache(privateMode: options.privateMode)
-        grid.files = files
-
-        canvas.onNavigate = { [weak self] d in self?.navigate(d) }
-        canvas.onSwitchMode = { [weak self] in self?.switchMode() }
-        canvas.onViewChange = { [weak self] in self?.updateBar() }
-        grid.onOpen = { [weak self] i in
-            guard let self else { return }
-            self.setCurrent(i)
-            self.switchMode()
-        }
-        grid.onSelectionChange = { [weak self] in
-            guard let self else { return }
-            self.current = self.grid.selection
-            self.updateBar()
-        }
-        grid.onToggleMark = { [weak self] i in self?.toggleMark(at: i) }
+        canvas.viewer = viewer
+        grid.viewer = viewer
+        grid.cache = ThumbnailCache(privateMode: viewer.options.privateMode)
 
         window.contentView = contentStack
         TitleBar.install(in: window)
-        if let geometry = options.geometry {
+        if let geometry = viewer.options.geometry {
             window.setFrame(NSRect(origin: window.frame.origin, size: geometry), display: false)
         }
         window.makeKeyAndOrderFront(nil)
@@ -171,45 +101,57 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func updateLayout() {
         guard let content = window.contentView else { return }
         let b = content.bounds
-        let barH = barVisible ? Config.barHeight : 0
-        bar.isHidden = !barVisible
+        let barH = viewer.barVisible ? Config.barHeight : 0
+        bar.isHidden = !viewer.barVisible
         bar.frame = CGRect(x: 0, y: 0, width: b.width, height: barH)
         let mainRect = CGRect(x: 0, y: barH, width: b.width, height: b.height - barH)
         canvas.frame = mainRect
         grid.frame = mainRect
         editor?.canvas.frame = mainRect
+        viewer.resizeCanvas(mainRect.size)
+        viewer.resizeGrid(mainRect.size)
         let editing = editor != nil
-        canvas.isHidden = thumbnailMode || editing
-        grid.isHidden = !thumbnailMode || editing
-        updateBar()
+        canvas.isHidden = viewer.thumbnailMode || editing
+        grid.isHidden = !viewer.thumbnailMode || editing
+        canvas.needsDisplay = true
+        grid.needsDisplay = true
+        barChanged()
     }
 
     // MARK: - window fitting (mpv's auto-window-resize and keepaspect-window)
 
-    // image pixels as points, rotation applied; nil when the window should keep its size
+    // the image the window fits and keeps the aspect of, in points; nil in the grid,
+    // with -g, and in fullscreen
     private var fittedImageSize: CGSize? {
-        guard options.geometry == nil, !thumbnailMode, let image,
-              !window.styleMask.contains(.fullScreen) else { return nil }
-        let s = image.size
-        return rotation % 180 == 0 ? s : CGSize(width: s.height, height: s.width)
+        window.styleMask.contains(.fullScreen) ? nil : viewer.fittedSize
     }
 
     // the content view fills the frame (fullSizeContentView), so frame math is content math
-    private func fitWindow() {
+    func fitWindow() {
         guard let size = fittedImageSize, let screen = window.screen else { return }
-        let barH = barVisible ? Config.barHeight : 0
+        let barH = viewer.barVisible ? Config.barHeight : 0
         let avail = screen.visibleFrame
         let scale = min(1, avail.width / size.width, (avail.height - barH) / size.height)
+        resize(to: CGSize(width: size.width * scale, height: size.height * scale + barH), on: screen)
+    }
+
+    func resetWindowSize() {
+        guard !window.styleMask.contains(.fullScreen), viewer.options.geometry == nil,
+              let screen = window.screen else { return }
+        resize(to: CGSize(width: Config.winWidth, height: Config.winHeight), on: screen)
+    }
+
+    // keeps the window's center
+    private func resize(to size: CGSize, on screen: NSScreen) {
         let old = window.frame
-        var frame = old
-        frame.size = CGSize(width: size.width * scale, height: size.height * scale + barH)
-        frame.origin = CGPoint(x: old.midX - frame.width / 2, y: old.midY - frame.height / 2)
+        let frame = CGRect(x: old.midX - size.width / 2, y: old.midY - size.height / 2,
+                           width: size.width, height: size.height)
         window.setFrame(window.constrainFrameRect(frame, to: screen), display: false)
     }
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         guard let size = fittedImageSize else { return frameSize }
-        let barH = barVisible ? Config.barHeight : 0
+        let barH = viewer.barVisible ? Config.barHeight : 0
         let old = window.frame.size
         // an edge drag changes one dimension, which drives the other; corner drags and
         // zoom change both, and then the largest frame inside the proposal wins
@@ -220,109 +162,69 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return NSSize(width: width, height: width * size.height / size.width + barH)
     }
 
-    // MARK: - image loading
+    // MARK: - ViewerUI
 
-    private func setCurrent(_ index: Int) {
-        guard files.indices.contains(index) else { return }
-        if index != current { alternate = current }
-        current = index
-        if thumbnailMode { updateBar() } else { loadCurrent() }
-        grid.select(current)
+    func loadImage(_ url: URL) -> ImageInfo? {
+        image = LoadedImage(url: url)
+        return image.map { ImageInfo(size: $0.size, delays: $0.delays) }
     }
 
-    private func loadCurrent() {
-        stopAnimation()
-        rotation = 0
-        flipH = false
-        flipV = false
-        guard files.indices.contains(current) else {
-            canvas.errorText = "no images"
-            canvas.setImage(nil, resetView: true)
-            updateBar()
-            return
+    func imageChanged() {
+        canvas.image = viewer.image == nil ? nil : processedFrame()
+        canvas.errorText = viewer.errorText
+        canvas.needsDisplay = true
+        if let entry = viewer.currentEntry, window.representedURL != entry.url { // not on every frame
+            window.title = entry.url.lastPathComponent
+            window.representedURL = entry.url
         }
-        let entry = files[current]
-        image = LoadedImage(url: entry.url)
-        frameIndex = 0
-        fitWindow()
-        if let image {
-            canvas.errorText = nil
-            canvas.setImage(processedFrame(), resetView: true)
-            if image.isAnimated { startAnimation() }
+    }
+
+    func viewChanged() { canvas.needsDisplay = true }
+    func gridChanged() { grid.needsDisplay = true }
+    func layoutChanged() { updateLayout() }
+    func invalidateThumbnails(_ entries: [FileEntry]) { grid.invalidate(entries) }
+    func toggleFullscreen() { window.toggleFullScreen(nil) }
+    func beep() { NSSound.beep() }
+
+    func barChanged() {
+        guard bar != nil else { return }
+        if let ed = editor {
+            bar.leftText = ed.flashText ?? ed.statusText
+            bar.rightText = viewer.currentEntry?.url.lastPathComponent ?? ""
         } else {
-            canvas.errorText = "could not load: \(entry.url.lastPathComponent)"
-            canvas.setImage(nil, resetView: true)
+            let status = viewer.statusText
+            bar.leftText = status.left
+            bar.rightText = status.right
         }
-        watchCurrent()
-        window.title = entry.url.lastPathComponent
-        window.representedURL = entry.url
-        updateBar()
-    }
-
-    // r, a changed file, the key-handler: a fresh thumbnail, and in image mode a fresh image
-    private func reloadCurrent() {
-        guard files.indices.contains(current) else { return }
-        grid.invalidate([files[current]])
-        guard !thumbnailMode else { return }
-        stopAnimation()
-        image = LoadedImage(url: files[current].url)
-        frameIndex = 0
-        fitWindow()
-        canvas.errorText = image == nil
-            ? "could not load: \(files[current].url.lastPathComponent)" : nil
-        redrawFrame()
-        if image?.isAnimated == true { startAnimation() }
-        updateBar()
     }
 
     // MARK: - frame processing (rotate/flip/gamma/contrast)
 
     private func processedFrame() -> CGImage? {
-        guard let raw = image?.frame(frameIndex) else { return nil }
+        guard let raw = image?.frame(viewer.frameIndex) else { return nil }
         var img = raw
         if let adjusted = applyColorCorrection(img) { img = adjusted }
-        if rotation != 0 || flipH || flipV {
-            img = Self.transform(img, rotation: rotation, flipH: flipH, flipV: flipV)
+        if viewer.rotation != 0 || viewer.flipH || viewer.flipV {
+            img = Self.transform(img, rotation: viewer.rotation, flipH: viewer.flipH, flipV: viewer.flipV)
         }
         return img
     }
 
     private func applyColorCorrection(_ img: CGImage) -> CGImage? {
-        guard gamma != 0 || contrast != 0 else { return nil }
-        let ci = CIImage(cgImage: img)
-        var out = ci
-        if gamma != 0 {
-            let g = gammaValue()
-            if let f = CIFilter(name: "CIGammaAdjust") {
-                f.setValue(out, forKey: kCIInputImageKey)
-                f.setValue(1 / g, forKey: "inputPower")
-                out = f.outputImage ?? out
-            }
+        guard viewer.gamma != 0 || viewer.contrast != 0 else { return nil }
+        var out = CIImage(cgImage: img)
+        if viewer.gamma != 0, let f = CIFilter(name: "CIGammaAdjust") {
+            f.setValue(out, forKey: kCIInputImageKey)
+            f.setValue(1 / viewer.gammaValue, forKey: "inputPower")
+            out = f.outputImage ?? out
         }
-        if contrast != 0 {
-            let c = contrastValue()
-            if let f = CIFilter(name: "CIColorControls") {
-                f.setValue(out, forKey: kCIInputImageKey)
-                f.setValue(c, forKey: kCIInputContrastKey)
-                out = f.outputImage ?? out
-            }
+        if viewer.contrast != 0, let f = CIFilter(name: "CIColorControls") {
+            f.setValue(out, forKey: kCIInputImageKey)
+            f.setValue(viewer.contrastValue, forKey: kCIInputContrastKey)
+            out = f.outputImage ?? out
         }
         return CIContext.shared.createCGImage(out, from: CGRect(x: 0, y: 0,
                                                                 width: img.width, height: img.height))
-    }
-
-    private func gammaValue() -> Double {
-        let steps = Double(Config.ccSteps)
-        return gamma <= 0
-            ? (steps + Double(gamma)) / steps
-            : 1 + Double(gamma) * (Config.gammaMax - 1) / steps
-    }
-
-    private func contrastValue() -> Double {
-        let steps = Double(Config.ccSteps)
-        return contrast <= 0
-            ? (steps + Double(contrast)) / steps
-            : 1 + Double(contrast) * (Config.contrastMax - 1) / steps
     }
 
     // rotates clockwise, then flips the rotated image as it appears on screen
@@ -339,295 +241,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return ctx.makeImage() ?? img
     }
 
-    private func redrawFrame() {
-        canvas.setImage(processedFrame(), resetView: false)
-    }
-
-    // MARK: - animation
-
-    private func startAnimation() {
-        guard let image, image.isAnimated else { return }
-        animationPlaying = true
-        scheduleNextFrame()
-    }
-
-    private func scheduleNextFrame() {
-        guard animationPlaying, let image else { return }
-        let delay = image.delays[frameIndex % image.delays.count]
-        animationTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-            guard let self, let img = self.image else { return }
-            self.frameIndex = (self.frameIndex + 1) % img.frameCount
-            self.redrawFrame()
-            self.updateBar()
-            self.scheduleNextFrame()
-        }
-    }
-
-    private func stopAnimation() {
-        animationPlaying = false
-        animationTimer?.invalidate()
-        animationTimer = nil
-    }
-
-    private func toggleAnimation() {
-        if animationPlaying {
-            stopAnimation()
-        } else {
-            startAnimation()
-        }
-        updateBar()
-    }
-
-    private func navigateFrame(_ d: Int) {
-        guard let image, image.frameCount > 1 else { return }
-        stopAnimation()
-        frameIndex = (frameIndex + d + image.frameCount) % image.frameCount
-        redrawFrame()
-        updateBar()
-    }
-
-    // MARK: - slideshow
-
-    private var slideshowActive: Bool { slideshowTimer != nil }
-
-    private func startSlideshow() {
-        slideshowTimer?.invalidate()
-        slideshowTimer = Timer.scheduledTimer(withTimeInterval: slideshowDelay,
-                                              repeats: true) { [weak self] _ in
-            guard let self else { return }
-            if self.current + 1 < self.files.count {
-                self.setCurrent(self.current + 1)
-            } else {
-                self.setCurrent(0) // wrap like nsxiv
-            }
-        }
-        updateBar()
-    }
-
-    private func stopSlideshow() {
-        slideshowTimer?.invalidate()
-        slideshowTimer = nil
-        updateBar()
-    }
-
-    private func toggleSlideshow() {
-        slideshowActive ? stopSlideshow() : startSlideshow()
-    }
-
-    private func adjustSlideshowDelay(_ d: TimeInterval) {
-        slideshowDelay = max(1, min(600, slideshowDelay + d))
-        if slideshowActive { startSlideshow() }
-        updateBar()
-    }
-
-    // MARK: - auto-reload (FSEvents-style watcher; macOS equivalent of inotify)
-
-    private var pendingReload: DispatchWorkItem?
-
-    private func watchCurrent() {
-        pendingReload?.cancel()
-        fileWatcher?.cancel()
-        fileWatcher = nil
-        guard files.indices.contains(current) else { return }
-        let path = files[current].path
-        let fd = open(path, O_EVTONLY)
-        guard fd >= 0 else { return }
-        let src = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd, eventMask: [.write, .extend, .rename, .delete],
-            queue: .main)
-        src.setEventHandler { [weak self] in self?.scheduleReload(of: path, attempts: 10) }
-        src.setCancelHandler { close(fd) }
-        src.resume()
-        fileWatcher = src
-    }
-
-    // editors write in chunks, or save a temp file and rename it over the original:
-    // reload once the file has been quiet for 0.2 s, then watch the new inode
-    private func scheduleReload(of path: String, attempts: Int) {
-        pendingReload?.cancel()
-        let reload = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            guard FileManager.default.fileExists(atPath: path) else {
-                // a save that deletes before it writes leaves the path empty for a while
-                if attempts > 1 { self.scheduleReload(of: path, attempts: attempts - 1) }
-                return
-            }
-            self.grid.invalidate([FileEntry(path: path)])
-            // the grid selection may have moved on since this file was opened
-            guard self.files.indices.contains(self.current), self.files[self.current].path == path
-            else { return }
-            self.reloadCurrent()
-            self.watchCurrent()
-        }
-        pendingReload = reload
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: reload)
-    }
-
-    // MARK: - navigation
-
-    private func navigate(_ d: Int) {
-        guard !files.isEmpty else { return }
-        let n = current + d
-        guard files.indices.contains(n) else {
-            NSSound.beep()
-            return
-        }
-        setCurrent(n)
-    }
-
-    private func navigateMarked(_ d: Int) {
-        guard !files.isEmpty else { return }
-        var i = current + d
-        while files.indices.contains(i) {
-            if files[i].marked {
-                setCurrent(i)
-                return
-            }
-            i += d
-        }
-        NSSound.beep()
-    }
-
-    private func switchMode() {
-        thumbnailMode.toggle()
-        if thumbnailMode {
-            stopSlideshow()
-            stopAnimation()
-            grid.select(current)
-        } else {
-            setCurrent(grid.selection) // loads the image
-        }
-        updateLayout()
-    }
-
-    // MARK: - marks
-
-    private func toggleMark(at index: Int) {
-        guard files.indices.contains(index) else { return }
-        files[index].marked.toggle()
-        lastMarked = index
-        syncMarks()
-    }
-
-    // anchor of M: the image marked or unmarked last, as in nsxiv
-    private var lastMarked = 0
-    private func markRange() {
-        guard files.indices.contains(lastMarked), files.indices.contains(current) else { return }
-        let lo = min(lastMarked, current), hi = max(lastMarked, current)
-        let state = files[lastMarked].marked
-        for i in lo...hi {
-            files[i].marked = state
-        }
-        lastMarked = current
-        syncMarks()
-    }
-
-    private func reverseMarks() {
-        for i in files.indices {
-            files[i].marked.toggle()
-        }
-        syncMarks()
-    }
-
-    private func unmarkAll() {
-        for i in files.indices {
-            files[i].marked = false
-        }
-        syncMarks()
-    }
-
-    // counted here, not in updateBar, which runs on every animation frame
-    private var markCount = 0
-    private func syncMarks() {
-        markCount = files.reduce(0) { $1.marked ? $0 + 1 : $0 }
-        grid.files = files
-        updateBar()
-    }
-
-    // MARK: - file removal
-
-    // where index i lands once only the indices in `kept` stay: on its own file,
-    // or on the next one that stays when its file went
-    static func remap(_ i: Int, kept: [Int]) -> Int {
-        kept.firstIndex { $0 >= i } ?? kept.count - 1
-    }
-
-    private func removeFiles(at removed: Set<Int>) {
-        let kept = files.indices.filter { !removed.contains($0) }
-        guard kept.count < files.count else { return }
-        if kept.isEmpty {
-            files.removeAll() // -o must not print what was just removed
-            quit()
-        }
-        let currentRemoved = removed.contains(current)
-        current = Self.remap(current, kept: kept)
-        alternate = Self.remap(alternate, kept: kept)
-        lastMarked = Self.remap(lastMarked, kept: kept)
-        files = kept.map { files[$0] }
-        syncMarks()
-        grid.select(current)
-        if currentRemoved, !thumbnailMode { loadCurrent() }
-    }
-
-    // MARK: - external key-handler (like nsxiv's ~/.config/nsxiv/exec/key-handler)
-
-    private var keyHandlerPath: String {
-        let cfg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]
-            ?? (NSHomeDirectory() + "/.config")
-        return cfg + "/\(Config.appName)/exec/key-handler"
-    }
-
-    private func runKeyHandler(key: String) {
-        let handler = keyHandlerPath
-        guard FileManager.default.isExecutableFile(atPath: handler) else {
-            warn("no executable key-handler at \(handler)")
-            return
-        }
-        let marked = files.indices.filter { files[$0].marked }
-        let targets = marked.isEmpty ? (files.indices.contains(current) ? [current] : []) : marked
-        guard !targets.isEmpty else { return }
-
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: handler)
-        proc.arguments = [key]
-        let pipe = Pipe()
-        proc.standardInput = pipe
-        do {
-            try proc.run()
-        } catch {
-            warn("key-handler failed: \(error.localizedDescription)")
-            return
-        }
-        // a handler may stop reading early; with SIGPIPE ignored the write fails instead
-        try? pipe.fileHandleForWriting.write(contentsOf: Data(targets.map { files[$0].path + "\n" }.joined().utf8))
-        try? pipe.fileHandleForWriting.close()
-        proc.waitUntilExit()
-        // the handler may have edited, moved or deleted its files
-        grid.invalidate(targets.map { files[$0] })
-        let gone = targets.filter { !FileManager.default.fileExists(atPath: files[$0].path) }
-        let currentGone = gone.contains(current)
-        removeFiles(at: Set(gone))
-        if !currentGone { reloadCurrent() }
-    }
-
     // MARK: - edit mode
 
-    private func enterEditMode() {
-        guard editor == nil, !thumbnailMode,
-              files.indices.contains(current),
-              let frame = processedFrame() else {
-            NSSound.beep()
-            return
-        }
-        stopSlideshow()
-        stopAnimation()
-        let ed = EditController(base: frame, sourceURL: files[current].url) { [weak self] in
-            self?.updateBar()
+    func enterEditMode() -> Bool {
+        guard editor == nil, let entry = viewer.currentEntry, let frame = processedFrame() else { return false }
+        let ed = EditController(base: frame, sourceURL: entry.url) { [weak self] in
+            self?.barChanged()
         }
         editor = ed
         // below the title bar overlay, above the image canvas
         window.contentView?.addSubview(ed.canvas, positioned: .above, relativeTo: canvas)
         updateLayout()
+        return true
     }
 
     private func exitEditMode(save: Bool) {
@@ -643,57 +268,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         ed.canvas.removeFromSuperview()
         editor = nil
-        if let savedURL {
-            // insert the edited copy right after the current image
-            let insertAt = min(current + 1, files.count)
-            files.insert(FileEntry(path: savedURL.path), at: insertAt)
-            if lastMarked >= insertAt { lastMarked += 1 }
-            grid.files = files
-            setCurrent(insertAt)
-        }
+        if let savedURL { viewer.insertAfterCurrent(savedURL.path) }
         updateLayout()
-    }
-
-    // MARK: - status bar
-
-    private func updateBar() {
-        guard bar != nil else { return }
-        if let ed = editor {
-            bar.leftText = ed.flashText ?? ed.statusText
-            bar.rightText = files.indices.contains(current)
-                ? files[current].url.lastPathComponent : ""
-            return
-        }
-        guard files.indices.contains(current) else {
-            bar.leftText = ""
-            bar.rightText = "0/0"
-            return
-        }
-        let entry = files[current]
-        var right = ""
-        if slideshowActive {
-            right += String(format: "%gs | ", slideshowDelay)
-        }
-        if gamma != 0 { right += "G\(gamma > 0 ? "+" : "")\(gamma) | " }
-        if contrast != 0 { right += "C\(contrast > 0 ? "+" : "")\(contrast) | " }
-        if markCount > 0 { right += "*\(markCount) | " }
-        if files[current].marked { right += "* | " }
-
-        if thumbnailMode {
-            right += "\(current + 1)/\(files.count)"
-            bar.leftText = entry.url.lastPathComponent
-        } else {
-            if let image {
-                if image.isAnimated {
-                    right += "\(animationPlaying ? "▶" : "⏸")[\(frameIndex + 1)/\(image.frameCount)] | "
-                }
-                right += "\(Int(image.size.width))x\(Int(image.size.height)) | "
-                right += "\(Int((canvas.zoom * 100).rounded()))% | "
-            }
-            right += "\(current + 1)/\(files.count)"
-            bar.leftText = entry.url.lastPathComponent
-        }
-        bar.rightText = right
     }
 
     // MARK: - key handling
@@ -716,184 +292,26 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return true
         }
-        guard let chars = event.charactersIgnoringModifiers, !chars.isEmpty else { return false }
-        let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        let key = chars
-        let ctrl = flags.contains(.control)
-        let cmd = flags.contains(.command)
-        let special = event.specialKey
-
         // cmd shortcuts pass through to the menu (cmd-q etc.)
-        if cmd { return false }
-
-        if prefixExternal {
-            prefixExternal = false
-            if special == nil || special == .carriageReturn {
-                var name = key
-                if ctrl { name = "C-" + name }
-                runKeyHandler(key: name)
-                return true
-            }
-            return true
-        }
-
-        // global mappings (both modes)
-        if ctrl {
-            switch key {
-            case "x":
-                prefixExternal = true
-                return true
-            case "h": scrollScreenOrPage(.left); return true
-            case "j": scrollScreenOrPage(.down); return true
-            case "k": scrollScreenOrPage(.up); return true
-            case "l": scrollScreenOrPage(.right); return true
-            case "m": reverseMarks(); return true
-            case "u": unmarkAll(); return true
-            case "g": gamma = 0; reloadColor(); return true
-            case "n": navigateFrame(+1); return true
-            case "p": navigateFrame(-1); return true
-            case "a", " ": toggleAnimation(); return true
-            case "6":
-                let a = alternate
-                setCurrent(a)
-                return true
-            case "]": contrast = min(Config.ccSteps, contrast + 1); reloadColor(); return true
-            case "[": contrast = max(-Config.ccSteps + 1, contrast - 1); reloadColor(); return true
-            default: break
-            }
-            if let special {
-                switch special {
-                case .leftArrow: scrollScreenOrPage(.left); return true
-                case .rightArrow: scrollScreenOrPage(.right); return true
-                case .upArrow: scrollScreenOrPage(.up); return true
-                case .downArrow: scrollScreenOrPage(.down); return true
-                default: break
-                }
-            }
-            return false
-        }
-
-        if let special {
-            switch special {
-            case .carriageReturn: switchMode(); return true
-            case .leftArrow: directional(.left); return true
-            case .rightArrow: directional(.right); return true
-            case .upArrow: directional(.up); return true
-            case .downArrow: directional(.down); return true
-            case .backspace, .delete: if !thumbnailMode { navigate(-1) }; return true
-            default: break
-            }
-        }
-
-        switch key {
-        case "q": quit(); return true
-        case "Q":
-            // pick-quit: print current selection, exit 0 (nsxiv g_pick_quit)
-            if files.indices.contains(current) { print(files[current].path) }
-            markedPrinted = true
-            exit(0)
-        case "f": window.toggleFullScreen(nil); return true
-        case "b": barVisible.toggle(); updateLayout(); fitWindow(); return true
-        case "g": setCurrent(0); return true
-        case "G": setCurrent(files.count - 1); return true
-        case "r": reloadCurrent(); return true
-        case "R":
-            if thumbnailMode { grid.invalidate(files) }
-            return true
-        case "D": removeFiles(at: [current]); return true
-        case "m":
-            toggleMark(at: current)
-            if !thumbnailMode { navigate(1) }
-            return true
-        case "M": markRange(); return true
-        case "N": navigateMarked(+1); return true
-        case "P": navigateMarked(-1); return true
-        case "{": gamma = max(-Config.ccSteps + 1, gamma - 1); reloadColor(); return true
-        case "}": gamma = min(Config.ccSteps, gamma + 1); reloadColor(); return true
-        case "(": contrast = max(-Config.ccSteps + 1, contrast - 1); reloadColor(); return true
-        case ")": contrast = min(Config.ccSteps, contrast + 1); reloadColor(); return true
-        case "+":
-            thumbnailMode ? grid.zoomThumbs(+1) : canvas.zoomStep(+1)
-            return true
-        case "-":
-            thumbnailMode ? grid.zoomThumbs(-1) : canvas.zoomStep(-1)
-            return true
-        default: break
-        }
-
-        if thumbnailMode {
-            switch key {
-            case "h": grid.moveSelection(.left); return true
-            case "j": grid.moveSelection(.down); return true
-            case "k": grid.moveSelection(.up); return true
-            case "l": grid.moveSelection(.right); return true
-            case " ": switchMode(); return true
-            default: return false
-            }
-        }
-
-        // image mode
-        switch key {
-        case "j": navigate(+1); return true
-        case "k": navigate(-1); return true
-        case " ": return true // disabled
-        case "]": navigate(+10); return true
-        case "[": navigate(-10); return true
-        case "h": canvas.scrollStep(.left, screenful: false); return true
-        case "l": canvas.scrollStep(.right, screenful: false); return true
-        case "u": canvas.scrollStep(.up, screenful: false); return true
-        case "d": canvas.scrollStep(.down, screenful: false); return true
-        case "H": canvas.scrollToEdge(.left); return true
-        case "J": canvas.scrollToEdge(.down); return true
-        case "K": canvas.scrollToEdge(.up); return true
-        case "L": canvas.scrollToEdge(.right); return true
-        case "z": canvas.centerImage(); return true
-        case "=": canvas.setZoom(1); return true
-        case "w": canvas.setScaleMode(.down); return true
-        case "W": canvas.setScaleMode(.fit); return true
-        case "F": canvas.setScaleMode(.fill); return true
-        case "e": canvas.setScaleMode(.width); return true
-        case "E": canvas.setScaleMode(.height); return true
-        case "<": rotate(270); return true
-        case ">": rotate(90); return true
-        case "?": rotate(180); return true
-        case "|": flipH.toggle(); redrawFrame(); return true
-        case "_": flipV.toggle(); redrawFrame(); return true
-        case "a": canvas.antialias.toggle(); return true
-        case "A": canvas.alphaLayer.toggle(); return true
-        case "x": enterEditMode(); return true
-        case "s": toggleSlideshow(); return true
-        case "S": adjustSlideshowDelay(+1); return true
-        default: return false
-        }
+        guard !event.modifierFlags.contains(.command), let key = Self.keyName(event) else { return false }
+        return viewer.handle(Keystroke(key: key, ctrl: event.modifierFlags.contains(.control)))
     }
 
-    private func reloadColor() {
-        redrawFrame()
-        updateBar()
-    }
-
-    private func rotate(_ degrees: Int) {
-        // under one flip a clockwise turn on screen is counterclockwise before the flip;
-        // two flips make a half turn and keep the direction
-        rotation = (rotation + (flipH == flipV ? degrees : 360 - degrees)) % 360
-        redrawFrame()
-        fitWindow()
-    }
-
-    private func scrollScreenOrPage(_ d: Direction) {
-        if thumbnailMode {
-            grid.scrollPage(d)
-        } else {
-            canvas.scrollStep(d, screenful: true)
-        }
-    }
-
-    private func directional(_ d: Direction) {
-        if thumbnailMode {
-            grid.moveSelection(d)
-        } else {
-            canvas.scrollStep(d, screenful: false)
+    // the typed text, or nsxiv's name for a key without one
+    private static func keyName(_ event: NSEvent) -> String? {
+        if event.keyCode == 53 { return "Escape" }
+        switch event.specialKey {
+        case .carriageReturn?: return "Return"
+        case .leftArrow?: return "Left"
+        case .rightArrow?: return "Right"
+        case .upArrow?: return "Up"
+        case .downArrow?: return "Down"
+        case .backspace?, .delete?: return "BackSpace"
+        case nil:
+            guard let chars = event.charactersIgnoringModifiers, !chars.isEmpty else { return nil }
+            return chars
+        default: return nil
         }
     }
 }
+#endif

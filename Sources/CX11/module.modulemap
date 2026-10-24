@@ -1,0 +1,7 @@
+module CX11 [system] {
+    header "shim.h"
+    link "X11"
+    link "Xft"
+    link "Imlib2"
+    export *
+}

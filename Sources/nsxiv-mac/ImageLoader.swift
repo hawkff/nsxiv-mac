@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import ImageIO
 
@@ -88,3 +89,4 @@ final class LoadedImage {
         return 0.1
     }
 }
+#endif
