@@ -12,7 +12,8 @@ the library nsxiv uses.
 - Window in the style of mpv: it takes each image's size, capped to the screen, and
   resizing keeps the aspect ratio. On macOS the image fills the window and the title
   bar fades in at the top edge. On Wayland a tiling compositor sets the size, and
-  resizing does not keep the aspect ratio. `-g WxH` fixes the size instead
+  resizing does not keep the aspect ratio; on sway a floating window keeps its
+  center and stays on screen. `-g WxH` fixes the size instead
 - Thumbnail grid. On macOS QuickLook renders and caches the thumbnails and `-p`
   bypasses that cache; on Linux they stay in memory for the session
 - Plays animated GIF, APNG, and WebP; steps through single frames
@@ -53,6 +54,9 @@ window-rule {
     default-column-width {}
 }
 ```
+
+niri asks windows to draw their own title bar unless its config sets
+`prefer-no-csd`. With that setting, the viewer draws none.
 
 ## Usage
 
@@ -106,6 +110,9 @@ Mouse: click near the left or right edge to navigate, drag to pan, right-click
 to switch modes. The scroll wheel zooms, and a touchpad pans on macOS and
 Wayland. On macOS a trackpad also pinch-zooms, and moving the mouse to the top
 edge shows the title bar; drag it to move the window, double-click it to zoom.
+Where the compositor draws no title bar, as on GNOME, the viewer draws one: drag
+it to move the window, double-click it to maximize, right-click it for the window
+menu, and drag the window's edges to resize it.
 
 ## Edit mode
 
