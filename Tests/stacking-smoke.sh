@@ -19,7 +19,10 @@ magick \( -size 600x350 xc:magenta xc:yellow +append \) \( -size 600x350 xc:cyan
 
 XDG_RUNTIME_DIR=$(mktemp -d)
 export XDG_RUNTIME_DIR
-unset DISPLAY WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP
+unset DISPLAY WAYLAND_DISPLAY SWAYSOCK
+# what each compositor puts in the session it starts
+case $compositor in labwc) XDG_CURRENT_DESKTOP=labwc:wlroots ;; *) XDG_CURRENT_DESKTOP=$compositor ;; esac
+export XDG_CURRENT_DESKTOP
 trap 'kill ${pid:-} ${server:-} 2>/dev/null || true' EXIT
 fail() { echo "$1" >&2; tail -40 "$log" >&2; exit 1; }
 export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1

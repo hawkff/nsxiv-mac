@@ -35,10 +35,23 @@ pid=$!
 sleep 6 # the large image shows from 4 to 8 seconds
 kill -0 "$pid"
 
-past=$(sed -n 's/.*Constraining .* to \(-*[0-9]*\),\(-*[0-9]*\) \([0-9]*\)x\([0-9]*\)$/\1 \2 \3 \4/p' "$log" |
-    awk '$3 > 400 && ($1 % 1280 + $3 > 1280 || $2 + $4 > 800)' | head -1)
-final=$(sed -n 's/.*info->current is \(-*[0-9]*\),\(-*[0-9]*\) \([0-9]*\)x\([0-9]*\) after.*/\1 \2 \3 \4/p' "$log" |
-    awk '$3 > 400' | tail -1)
+# mutter names each window it constrains; the viewer's own comes first, its room probes later.
+# For that window: where it asked to go, and where each constraint left it
+viewer() {
+    awk -v kind="$1" '
+        / Constraining / {
+            s = substr($0, index($0, "Constraining ") + 13)
+            desc = substr(s, 1, index(s, " in move") - 1)
+            if (first == "") first = desc
+            if (kind == "asked" && desc == first) { split($(NF - 1), p, ","); split($NF, z, "x"); print p[1], p[2], z[1], z[2] }
+        }
+        /info->current is/ && desc == first && kind == "placed" {
+            for (i = 1; i < NF; i++) if ($i == "is") { split($(i + 1), p, ","); split($(i + 2), z, "x"); print p[1], p[2], z[1], z[2] }
+        }' "$log"
+}
+past=$(viewer asked | awk '$3 > 400 && ($1 % 1280 + $3 > 1280 || $2 + $4 > 800)' | head -1)
+final=$(viewer placed | awk '$3 > 400' | tail -1)
+echo "the viewer asked for: $(viewer asked | tr '\n' ';')"
 echo "monitors: $monitors x 1280x800; asked past an edge: ${past:-never}; placed at: ${final:-nothing}"
 [ -n "$final" ] || { echo "the window did not grow for the large image" >&2; tail -40 "$log" >&2; exit 1; }
 if [ "$monitors" -eq 1 ]; then

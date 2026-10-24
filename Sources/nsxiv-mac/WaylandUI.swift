@@ -73,7 +73,7 @@ final class WaylandUI: ViewerUI {
     private let desktops = Set((ProcessInfo.processInfo.environment["XDG_CURRENT_DESKTOP"] ?? "").split(separator: ":"))
     private var probe: (popup: OpaquePointer, role: OpaquePointer, surface: OpaquePointer)?
     private var probed: (x: Int32, y: Int32, width: Int32, height: Int32)?
-    private var room: CGSize? // what a probe found, during the resize that waited on it
+    private var room: CGRect? // the probed work area around the window, during the resize that waited on it
     private var swayRoom: CGSize? // what a floating window's content may take in its sway workspace
     private var swayFrom: CGSize? // the size before a burst of resizes, until sway places the window
 
@@ -290,8 +290,8 @@ final class WaylandUI: ViewerUI {
         if requested.width == 0, requested.height == 0, size.width > 0, width > size.width || height > size.height,
            probesRoom {
             guard let room = takeRoom() else { return } // the probe's answer calls back here
-            width = min(width, max(size.width, Int(room.width)))
-            height = min(height, max(size.height, Int(room.height)))
+            width = min(width, grownLimit(size.width, room.minX, room.maxX))
+            height = min(height, grownLimit(size.height, room.minY, room.maxY))
         }
         guard width != size.width || height != size.height else { return }
         let old = CGSize(width: size.width, height: size.height)
@@ -716,19 +716,31 @@ final class WaylandUI: ViewerUI {
 
     // MARK: - room probe
 
-    // Most compositors keep a window's top-left corner when it grows and give a client no way
-    // to move itself; mutter moves it back on screen, though not onto its own monitor. A client
-    // can still ask how much room it has: an unmapped popup anchored at the window's top-left,
-    // as large as can be and allowed only to shrink, comes back trimmed to the work area of the
-    // window's screen, and the window grows only that far.
+    // Most compositors give a client no way to move its window, and few keep a growing window
+    // on its screen; mutter keeps it on screen, though not on its own monitor. A client can
+    // still ask how much room it has: an unmapped popup centered on the window, as large as can
+    // be and allowed only to shrink, comes back trimmed to the work area of the window's
+    // screen, and the window grows only as far as that leaves room.
     private var probesRoom: Bool {
         if sway || desktops.contains("KDE") { return false } // they place the window themselves
         if desktops.contains("GNOME") { return outputs.count > 1 }
         return true
     }
 
+    // labwc, Wayfire and mutter keep the top-left corner of a window that grows itself
+    private var keepsTopLeft: Bool { !desktops.isDisjoint(with: ["labwc", "wayfire", "GNOME"]) }
+
+    // the largest extent the window may grow to inside lo...hi, its edges at 0 and extent: a
+    // window that keeps its top-left corner needs room after it; one that keeps its center,
+    // half the growth on each side; where the compositor is unknown, growth must suit both
+    private func grownLimit(_ extent: Int, _ lo: CGFloat, _ hi: CGFloat) -> Int {
+        let after = hi - CGFloat(extent), before = -lo
+        let growth = keepsTopLeft ? after : min(after, 2 * before)
+        return extent + max(0, Int(growth.rounded(.down)))
+    }
+
     // the room a probe found; otherwise a probe starts and the caller waits for it
-    private func takeRoom() -> CGSize? {
+    private func takeRoom() -> CGRect? {
         if room == nil { startProbe() }
         return room
     }
@@ -737,9 +749,9 @@ final class WaylandUI: ViewerUI {
         guard probe == nil, let wmBase, let compositor, let xdgSurface else { return }
         let positioner = xdg_wm_base_create_positioner(wmBase)
         xdg_positioner_set_size(positioner, 1 << 20, 1 << 20)
-        xdg_positioner_set_anchor_rect(positioner, 0, 0, 1, 1)
-        xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_TOP_LEFT.rawValue)
-        xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT.rawValue)
+        xdg_positioner_set_anchor_rect(positioner, 0, 0, Int32(size.width), Int32(size.height))
+        xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_NONE.rawValue)
+        xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_NONE.rawValue)
         xdg_positioner_set_constraint_adjustment(positioner, XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_RESIZE_X.rawValue
                                                      | XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_RESIZE_Y.rawValue)
         let surface = wl_compositor_create_surface(compositor)
@@ -766,10 +778,12 @@ final class WaylandUI: ViewerUI {
         xdg_surface_destroy(probe.role)
         wl_surface_destroy(probe.surface)
         self.probe = nil
-        // the popup sits at x, y of the window's geometry, which is negative space when the
-        // corner was outside the work area
-        room = probed.map { CGSize(width: Int($0.x) + Int($0.width), height: Int($0.y) + Int($0.height)) }
-            ?? CGSize(width: Int(Int32.max), height: Int(Int32.max))
+        // relative to the window's top-left; a popup no compositor trimmed means no limit
+        let unlimited = CGRect(x: -1e9, y: -1e9, width: 2e9, height: 2e9)
+        room = probed.flatMap { p in
+            p.width >= 1 << 20 || p.height >= 1 << 20 ? nil : CGRect(x: Int(p.x), y: Int(p.y), width: Int(p.width), height: Int(p.height))
+        } ?? unlimited
+        warn("room probe: \(String(describing: probed)) for \(size)") // TEMP: CI diagnosis
         probed = nil
         applySize()
         room = nil // the window may move before it grows again
