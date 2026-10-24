@@ -10,6 +10,11 @@ extension CGContext {
     }
 }
 
+extension CIContext {
+    // building a context is expensive; Core Image contexts are safe to share across threads
+    static let shared = CIContext()
+}
+
 final class LoadedImage {
     private let source: CGImageSource
     let frameCount: Int
@@ -42,7 +47,9 @@ final class LoadedImage {
             d.append(LoadedImage.delay(source: src, index: i))
         }
         delays = d
-        frames.countLimit = 48
+        // NSCache trims animation frames toward 256 MiB, a target it may overshoot; a still
+        // image keeps its one frame, which NSCache could drop for costing more than the limit
+        if frameCount > 1 { frames.totalCostLimit = 256 << 20 }
     }
 
     func frame(_ index: Int) -> CGImage? {
@@ -56,7 +63,7 @@ final class LoadedImage {
         ]
         guard let img = CGImageSourceCreateThumbnailAtIndex(source, i, opts as CFDictionary)
         else { return nil }
-        frames.setObject(img, forKey: i as NSNumber)
+        frames.setObject(img, forKey: i as NSNumber, cost: img.bytesPerRow * img.height)
         return img
     }
 

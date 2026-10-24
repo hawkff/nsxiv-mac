@@ -19,13 +19,44 @@ struct RegressionChecks {
         try png.write(to: nested.appendingPathComponent("frame.png"))
         try png.write(to: directory.appendingPathComponent(".hidden.png"))
         try Data().write(to: directory.appendingPathComponent("notes.txt"))
+        try fm.createSymbolicLink(at: directory.appendingPathComponent("link.png"), withDestinationURL: imageURL)
+        try fm.createDirectory(at: directory.appendingPathComponent("album.png"), withIntermediateDirectories: false)
+        guard mkfifo(directory.appendingPathComponent("pipe.png").path, 0o600) == 0 else { fatalError("mkfifo failed") }
 
         let flat = FileList.build(paths: [directory.path], recursive: false, quiet: true)
         let recursive = FileList.build(paths: [directory.path], recursive: true, quiet: true)
-        assert(flat.map { $0.url.standardizedFileURL.path } == [imageURL.standardizedFileURL.path],
-               "nonrecursive paths: \(flat.map(\.path)); expected: \(imageURL.standardizedFileURL.path)")
-        assert(recursive.count == 2 && recursive.allSatisfy { $0.url.pathExtension == "png" },
-               "recursive scan must retain only visible images")
+        assert(flat.map(\.url.lastPathComponent) == ["frame.png", "link.png"],
+               "nonrecursive scan must keep visible images and symlinks to them: \(flat.map(\.path))")
+        assert(recursive.map(\.url.lastPathComponent) == ["frame.png", "link.png", "frame.png"]
+               && recursive.last?.url.deletingLastPathComponent().lastPathComponent == "nested",
+               "recursive scan must retain only visible images: \(recursive.map(\.path))")
+
+        let parsed = Options.parse(["-rtn5", "-sw", "a.png", "--", "-b.png"])
+        assert(parsed.recursive && parsed.thumbnailMode && parsed.startAt == 5
+               && parsed.scaleMode == ScaleMode.width && parsed.paths == ["a.png", "-b.png"],
+               "clustered short options must parse like getopt")
+
+        // files 0 1 2 3, file 1 removed: 2 and 3 move up, 1 lands on the old 2
+        assert((0...3).map { AppController.remap($0, kept: [0, 2, 3]) } == [0, 1, 1, 2],
+               "removal must keep indices on their files")
+        assert(AppController.remap(2, kept: [0, 1]) == 1, "removing the last file must land on the new last")
+
+        // a red pixel left of a blue one; turned clockwise, red is on top
+        let strip = CGContext.rgba(width: 2, height: 1)!
+        strip.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        strip.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        strip.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+        strip.fill(CGRect(x: 1, y: 0, width: 1, height: 1))
+        func redOnTop(_ img: CGImage) -> Bool {
+            let ctx = CGContext.rgba(width: img.width, height: img.height)!
+            ctx.draw(img, in: CGRect(x: 0, y: 0, width: img.width, height: img.height))
+            let bytes = ctx.data!.assumingMemoryBound(to: UInt8.self)
+            return bytes[0] > 128 && bytes[ctx.bytesPerRow] < 128 // first row in memory is the top
+        }
+        let turned = AppController.transform(strip.makeImage()!, rotation: 90, flipH: false, flipV: false)
+        let turnedFlipped = AppController.transform(strip.makeImage()!, rotation: 90, flipH: false, flipV: true)
+        assert(turned.width == 1 && redOnTop(turned), "rotation must turn clockwise")
+        assert(!redOnTop(turnedFlipped), "a flip must mirror the image as rotated on screen")
 
         let app = NSApplication.shared
         let geometries: [CGSize?] = [nil, CGSize(width: 640, height: 480)]

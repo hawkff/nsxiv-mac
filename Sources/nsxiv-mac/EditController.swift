@@ -76,7 +76,7 @@ final class EditController {
         }
 
         if flags.contains(.command) {
-            switch key {
+            switch key.lowercased() { // with Shift held the key arrives as "Z"
             case "z": flags.contains(.shift) ? session.redo() : session.undo()
             case "s": return .save
             case "c": copyToClipboard()

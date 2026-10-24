@@ -101,7 +101,6 @@ struct Annotation: Identifiable {
 }
 
 enum AnnotationRenderer {
-    private static let ciContext = CIContext()
     private static var censorCache: [String: CGImage] = [:]
 
     static func drawAll(_ annotations: [Annotation], base: CGImage?, ctx: CGContext,
@@ -288,7 +287,7 @@ enum AnnotationRenderer {
         case .solid:
             break
         }
-        let out = ciContext.createCGImage(ci, from: CGRect(origin: .zero, size: crop.size))
+        let out = CIContext.shared.createCGImage(ci, from: CGRect(origin: .zero, size: crop.size))
         if let out { censorCache[key] = out }
         return out
     }

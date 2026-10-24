@@ -7,20 +7,25 @@ import QuickLookThumbnailing
 final class ThumbnailCache {
     private let privateMode: Bool
     private let memory = NSCache<NSString, CGImage>()
+    // bumped by invalidate, so a thumbnail that was in flight then cannot come back stale
+    private var generations: [String: Int] = [:] // main thread only
 
     init(privateMode: Bool) {
         self.privateMode = privateMode
     }
 
+    func cached(_ entry: FileEntry) -> CGImage? {
+        memory.object(forKey: entry.path as NSString)
+    }
+
     func thumbnail(for entry: FileEntry, completion: @escaping (CGImage?) -> Void) {
-        let key = entry.path as NSString
-        if let hit = memory.object(forKey: key) {
-            completion(hit)
-            return
-        }
+        let generation = generations[entry.path, default: 0]
         let deliver = { (img: CGImage?) in
-            if let img { self.memory.setObject(img, forKey: key) }
-            DispatchQueue.main.async { completion(img) }
+            DispatchQueue.main.async {
+                let current = self.generations[entry.path, default: 0] == generation
+                if let img, current { self.memory.setObject(img, forKey: entry.path as NSString) }
+                completion(current ? img : nil)
+            }
         }
         if privateMode {
             DispatchQueue.global(qos: .userInitiated).async { deliver(Self.decode(entry.url)) }
@@ -35,6 +40,7 @@ final class ThumbnailCache {
     }
 
     func invalidate(_ entry: FileEntry) {
+        generations[entry.path, default: 0] += 1
         memory.removeObject(forKey: entry.path as NSString)
     }
 
