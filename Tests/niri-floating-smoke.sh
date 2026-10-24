@@ -1,8 +1,8 @@
 #!/bin/sh
 # Runs the Linux build as a floating window of niri, nested in a headless sway: a window rule
-# opens it 10 pixels from the bottom-right corner, and the slideshow's second image needs
-# most of the screen. The grown window must stay inside niri's output; niri's IPC reports
-# where it is.
+# opens it 300 pixels from the bottom-right corner, and the slideshow's second image needs
+# most of the screen. The window must grow into that room and stay inside niri's output;
+# niri's IPC reports where it is.
 set -eu
 bin=$1
 pics=$(mktemp -d)
@@ -39,7 +39,7 @@ cat >"$conf/niri.kdl" <<'EOF'
 window-rule {
     match app-id="nsxiv-mac"
     open-floating true
-    default-floating-position x=10 y=10 relative-to="bottom-right"
+    default-floating-position x=300 y=300 relative-to="bottom-right"
 }
 hotkey-overlay {
     skip-at-startup
@@ -67,6 +67,6 @@ echo "output: $output; window (floating, x, y, width, height): $window"
 set -- $(echo "$output $window" | tr -d '[]' | tr ',' ' ')
 [ "$3" = true ] || { echo "the window is not floating" >&2; exit 1; }
 w=$1 h=$2 x=${4%.*} y=${5%.*} tw=${6%.*} th=${7%.*}
-[ "$tw" -gt 300 ] || { echo "the window did not grow for the large image" >&2; exit 1; }
+[ "$tw" -gt 400 ] || { echo "the window did not grow into the room it had" >&2; exit 1; }
 [ "$x" -ge 0 ] && [ "$y" -ge 0 ] && [ $((x + tw)) -le "${w%.*}" ] && [ $((y + th)) -le "${h%.*}" ] ||
     { echo "the grown window ran past niri's output" >&2; exit 1; }

@@ -17,6 +17,7 @@ final class WaylandUI: ViewerUI {
     private var wmBase: OpaquePointer?
     private var seat: OpaquePointer?
     private var seatVersion: UInt32 = 0
+    private var wmBaseVersion: UInt32 = 0
     private var decorations: OpaquePointer?
     private var csd = false // no server-side decorations, as on GNOME: the window draws a title bar
     private var fractionalScaling: OpaquePointer?
@@ -73,7 +74,8 @@ final class WaylandUI: ViewerUI {
     // sessions spell these differently: Wayfire, wayfire, ubuntu:GNOME
     private let desktops = Set((ProcessInfo.processInfo.environment["XDG_CURRENT_DESKTOP"] ?? "").lowercased()
         .split(separator: ":"))
-    private var probe: (popup: OpaquePointer, role: OpaquePointer, surface: OpaquePointer)?
+    private var probe: (popup: OpaquePointer, role: OpaquePointer, surface: OpaquePointer, positioner: OpaquePointer,
+                        repositioned: Bool)?
     private var probes = 0 // tells a probe's timeout from a later probe's
     private var committed = (width: 0, height: 0) // the size of the last buffer the compositor got
     private var probeAfterCommit = false
@@ -178,6 +180,7 @@ final class WaylandUI: ViewerUI {
             wl_output_add_listener(proxy, Self.outputListener, data)
         case "xdg_wm_base":
             wmBase = proxy
+            wmBaseVersion = min(version, newestVersion)
             xdg_wm_base_add_listener(proxy, Self.wmBaseListener, data)
         case "zxdg_decoration_manager_v1": decorations = proxy
         case "wp_fractional_scale_manager_v1": fractionalScaling = proxy
@@ -758,14 +761,13 @@ final class WaylandUI: ViewerUI {
         let surface = wl_compositor_create_surface(compositor)
         let role = xdg_wm_base_get_xdg_surface(wmBase, surface)
         let popup = xdg_surface_get_popup(role, xdgSurface, positioner)
-        xdg_positioner_destroy(positioner)
-        guard let surface, let role, let popup else { return }
+        guard let positioner, let surface, let role, let popup else { return }
         let data = Unmanaged.passUnretained(self).toOpaque()
         xdg_popup_add_listener(popup, Self.probeListener, data)
         xdg_surface_add_listener(role, Self.probeSurfaceListener, data)
         wl_surface_commit(surface) // no buffer: only asks for the popup's configure
         wl_display_flush(display)
-        probe = (popup, role, surface)
+        probe = (popup, role, surface, positioner, false)
         probed = nil
         probes += 1
         // a compositor that never answers gets no cap
@@ -775,11 +777,26 @@ final class WaylandUI: ViewerUI {
         }
     }
 
+    // Hyprland configures a new popup as asked and trims it once it is repositioned
+    private func probeConfigured(_ serial: UInt32) {
+        guard let probe else { return }
+        let trimmed = probed.map { $0.width < 1 << 20 && $0.height < 1 << 20 } ?? false
+        if !trimmed, !probe.repositioned, wmBaseVersion >= 3 {
+            xdg_surface_ack_configure(probe.role, serial)
+            xdg_popup_reposition(probe.popup, probe.positioner, 1)
+            wl_display_flush(display)
+            self.probe?.repositioned = true
+            return
+        }
+        probeAnswered()
+    }
+
     private func probeAnswered() {
         guard let probe else { return }
         xdg_popup_destroy(probe.popup)
         xdg_surface_destroy(probe.role)
         wl_surface_destroy(probe.surface)
+        xdg_positioner_destroy(probe.positioner)
         self.probe = nil
         // relative to the window's top-left; a popup no compositor trimmed means no limit
         let unlimited = CGRect(x: -1e9, y: -1e9, width: 2e9, height: 2e9)
@@ -1071,7 +1088,7 @@ final class WaylandUI: ViewerUI {
 
     // the xdg_surface configure closes the popup's configure sequence
     private static let probeSurfaceListener = make(xdg_surface_listener(
-        configure: { data, _, _ in WaylandUI.ui(data).probeAnswered() }))
+        configure: { data, _, serial in WaylandUI.ui(data).probeConfigured(serial) }))
 
     private static let decorationListener = make(zxdg_toplevel_decoration_v1_listener(
         configure: { data, _, mode in
