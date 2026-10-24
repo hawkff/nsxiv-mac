@@ -2,15 +2,17 @@
 
 A Swift rewrite of [nsxiv](https://github.com/nsxiv/nsxiv)'s keyboard-driven
 image viewing. On macOS it runs on AppKit, ImageIO, and Vision with no
-third-party dependencies and needs macOS 13 or later. On Linux it draws with
-Xlib, Imlib2, and Xft, the libraries nsxiv uses.
+third-party dependencies and needs macOS 13 or later. On Linux it opens a
+Wayland window, or an X11 one outside a Wayland session, and draws with Imlib2,
+the library nsxiv uses.
 
 ## Features
 
 - Image mode: zoom, pan, rotate, flip, gamma and contrast correction
 - Window in the style of mpv: it takes each image's size, capped to the screen, and
   resizing keeps the aspect ratio. On macOS the image fills the window and the title
-  bar fades in at the top edge. `-g WxH` fixes the size instead
+  bar fades in at the top edge. On Wayland a tiling compositor sets the size, and
+  resizing does not keep the aspect ratio. `-g WxH` fixes the size instead
 - Thumbnail grid. On macOS QuickLook renders and caches the thumbnails and `-p`
   bypasses that cache; on Linux they stay in memory for the session
 - Plays animated GIF, APNG, and WebP; steps through single frames
@@ -32,15 +34,25 @@ swift build -c release
 ```
 
 On Linux, install a [Swift toolchain](https://www.swift.org/install/linux/) and
-the X11, Xft, and Imlib2 headers, then build:
+the Wayland, X11, Imlib2, and fontconfig headers, then build. Arch has no Swift
+package of its own; `swift-bin` from the AUR repackages the swift.org toolchain.
 
 ```sh
-sudo apt install libx11-dev libxft-dev libimlib2-dev pkg-config   # Debian, Ubuntu
-sudo pacman -S libx11 libxft imlib2 pkgconf                       # Arch, Artix
+sudo apt install libwayland-dev libxkbcommon-dev libx11-dev libimlib2-dev libfontconfig-dev pkg-config  # Debian, Ubuntu
+sudo pacman -S wayland libxkbcommon libx11 imlib2 fontconfig pkgconf                                     # Arch, Artix
 swift build -c release --static-swift-stdlib
 ```
 
 The binary lands in `.build/release/nsxiv-mac`. Copy it into your `$PATH`.
+
+On niri, this window rule opens the viewer in a column as wide as the image:
+
+```kdl
+window-rule {
+    match app-id="nsxiv-mac"
+    default-column-width {}
+}
+```
 
 ## Usage
 
@@ -91,9 +103,9 @@ nsxiv defaults, adjusted where noted:
 | `C-x KEY` | pass KEY and the file list to your key-handler |
 
 Mouse: click near the left or right edge to navigate, drag to pan, right-click
-to switch modes. The scroll wheel zooms. On macOS a trackpad pans and
-pinch-zooms, and moving the mouse to the top edge shows the title bar; drag it to
-move the window, double-click it to zoom.
+to switch modes. The scroll wheel zooms, and a touchpad pans on macOS and
+Wayland. On macOS a trackpad also pinch-zooms, and moving the mouse to the top
+edge shows the title bar; drag it to move the window, double-click it to zoom.
 
 ## Edit mode
 
@@ -137,8 +149,8 @@ never modifies the source file.
 Place an executable at `~/.config/nsxiv-mac/exec/key-handler`. After you press
 `C-x` in the viewer, the next key arrives as `$1` and the marked files (or the
 current file) arrive on stdin, one path per line. `etc/key-handler.example`
-ships clipboard, trash, and reveal actions; on Linux they use xclip, gio, and
-xdg-open.
+ships clipboard, trash, and reveal actions; on Linux they use wl-copy or xclip,
+gio, and xdg-open.
 
 ## File manager integration
 
