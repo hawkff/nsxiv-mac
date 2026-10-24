@@ -262,8 +262,9 @@ final class WaylandUI: ViewerUI {
             if w == 0, h > barH { w = min(maxSize.width, (image.width * upTo((h - barH) / image.height)).rounded()) }
             if h == 0, w > 0 { h = min(maxSize.height, (image.height * upTo(w / image.width)).rounded() + barH) }
         }
-        if w == 0 { w = wanted.width }
-        if h == 0 { h = wanted.height }
+        // the 800x600 default overflows 1280x800 at scale 1.5
+        if w == 0 { w = min(wanted.width, maxSize.width.rounded(.down)) }
+        if h == 0 { h = min(wanted.height, maxSize.height.rounded(.down)) }
         let width = max(1, Int(w)), height = max(1, Int(h))
         guard width != size.width || height != size.height else { return }
         size = (width, height)
