@@ -40,6 +40,12 @@ export WAYLAND_DISPLAY
 unset DISPLAY # a Wayland window, not an X one through XWayland
 
 shot() { sleep 1; grim "$shots/$1.png"; }
+# the floating window takes each image's size
+expect_width() {
+    width=$(SWAYSOCK=$(echo "$XDG_RUNTIME_DIR"/sway-ipc.*.sock) swaymsg -t get_tree |
+        jq '.. | objects | select(.app_id == "nsxiv-mac") | .geometry.width')
+    [ "$width" = "$1" ] || { echo "window is $width wide, expected $1" >&2; exit 1; }
+}
 # each wtype plugs in a new virtual keyboard; the pause lets the client bind it first
 key() { wtype -s 300 "$@"; }
 
@@ -48,7 +54,7 @@ pid=$!
 sleep 2
 shot 1-image
 key '>' && shot 2-turned
-key j && shot 3-alpha
+key j && shot 3-alpha && expect_width 200
 key A && shot 4-checkerboard
 key j && shot 5-animated
 key f && shot 6-fullscreen

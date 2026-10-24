@@ -36,6 +36,7 @@ final class WaylandUI: ViewerUI {
     private var states: Set<UInt32> = []
     private var bounds: (width: Int32, height: Int32)?
     private var wanted: CGSize
+    private var picked: [CGSize] = [] // the last sizes the viewer chose itself, newest last
     private var scale120 = 120 // wp_fractional_scale_v1 sends the scale times 120
     private var enteredOutputs: Set<OpaquePointer> = []
     private var title = ""
@@ -86,7 +87,7 @@ final class WaylandUI: ViewerUI {
         wl_registry_add_listener(registry, Self.registryListener, data)
         wl_display_roundtrip(display) // the globals
         guard let compositor, shm != nil, let wmBase else {
-            warn("the Wayland compositor offers no xdg-shell; trying X11")
+            warn("the Wayland compositor lacks xdg-shell or wl_compositor 4; trying X11")
             wl_display_disconnect(display)
             return nil
         }
@@ -141,6 +142,7 @@ final class WaylandUI: ViewerUI {
             "zxdg_decoration_manager_v1": 1, "wp_fractional_scale_manager_v1": 1, "wp_viewporter": 1,
         ]
         guard let newestVersion = newest[interface], let table = nsx_interface(interface),
+              interface != "wl_compositor" || version >= 4, // damage_buffer came with 4
               let raw = wl_registry_bind(registry, name, table, min(version, newestVersion)) else { return }
         let proxy = OpaquePointer(raw)
         let data = Unmanaged.passUnretained(self).toOpaque()
@@ -221,9 +223,27 @@ final class WaylandUI: ViewerUI {
         return sizes.max { $0.width * $0.height < $1.width * $1.height } ?? CGSize(width: 1920, height: 1080)
     }
 
+    // states in which the compositor's size binds; without them it is a hint
+    private static let heldStates = Set([
+        XDG_TOPLEVEL_STATE_MAXIMIZED, XDG_TOPLEVEL_STATE_FULLSCREEN, XDG_TOPLEVEL_STATE_RESIZING,
+        XDG_TOPLEVEL_STATE_TILED_LEFT, XDG_TOPLEVEL_STATE_TILED_RIGHT,
+        XDG_TOPLEVEL_STATE_TILED_TOP, XDG_TOPLEVEL_STATE_TILED_BOTTOM,
+    ].map(\.rawValue))
+
     private func configure(_ serial: UInt32) {
         let wasFullscreen = fullscreen
         states = Set(pendingStates)
+        let asked = CGSize(width: Int(requested.width), height: Int(requested.height))
+        if states.contains(XDG_TOPLEVEL_STATE_RESIZING.rawValue), asked.width > 0, asked.height > 0 {
+            wanted = asked // a dragged size lasts until the next image, as on X11
+            remember(asked)
+        } else if states.isDisjoint(with: Self.heldStates), picked.contains(asked) {
+            // sway answers a floating window's own resize with a configure of that size, late
+            // when keys come fast; such an answer leaves the size to the viewer.
+            // shortcut: a compositor resize to one of the last eight picked sizes reads as an
+            // answer too, track configure serials if that ever matters
+            requested = (0, 0)
+        }
         xdg_surface_ack_configure(xdgSurface, serial)
         configured = true
         if wasFullscreen, !fullscreen { fitWindow() }
@@ -247,7 +267,13 @@ final class WaylandUI: ViewerUI {
         let width = max(1, Int(w)), height = max(1, Int(h))
         guard width != size.width || height != size.height else { return }
         size = (width, height)
+        if requested.width == 0, requested.height == 0 { remember(CGSize(width: width, height: height)) }
         layoutChanged()
+    }
+
+    private func remember(_ size: CGSize) {
+        picked.append(size)
+        if picked.count > 8 { picked.removeFirst() }
     }
 
     // MARK: - ViewerUI
@@ -551,7 +577,11 @@ final class WaylandUI: ViewerUI {
     private func axisFrame() {
         defer { scroll = (0, 0, 0, false) }
         if viewer.thumbnailMode {
-            if scroll.dy != 0 { viewer.scrollGrid(by: CGFloat(scroll.dy)) }
+            if !scroll.smooth, scroll.steps != 0 {
+                viewer.scrollGrid(by: CGFloat(scroll.steps) * viewer.grid.cellSize / 3) // as on X11
+            } else if scroll.dy != 0 {
+                viewer.scrollGrid(by: CGFloat(scroll.dy))
+            }
         } else if scroll.smooth {
             viewer.pan(dx: -CGFloat(scroll.dx), dy: CGFloat(scroll.dy))
         } else if scroll.steps != 0 || scroll.dy != 0 {

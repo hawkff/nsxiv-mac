@@ -43,7 +43,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends libx11-dev libimlib2-dev libfontconfig-dev \
             libwayland-dev libxkbcommon-dev pkg-config xvfb xauth xdotool imagemagick fonts-dejavu-core \
-            sway grim wtype
+            sway grim wtype jq
       - name: Build
         run: swift build -c release --static-swift-stdlib
       - name: Smoke test
@@ -89,10 +89,14 @@ jobs:
       - name: Install Swift, X11, Wayland, Imlib2 and niri
         run: |
           pacman -Syu --noconfirm --needed base-devel libx11 imlib2 fontconfig wayland libxkbcommon \
-            libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim imagemagick mesa
-          # the toolchain the AUR's swift-bin repackages, with ncurses under its Arch name
-          curl -fsSL https://download.swift.org/swift-6.4.1-release/ubi10/swift-6.4.1-RELEASE/swift-6.4.1-RELEASE-ubi10.tar.gz \
-            | tar -xz -C /opt
+            libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim wtype imagemagick mesa
+          # the toolchain the AUR's swift-bin repackages, with ncurses under its Arch name; the
+          # hash is of the tarball the Swift 6.x release key signed
+          tarball=swift-6.4.1-RELEASE-ubi10.tar.gz
+          curl -fsSLo "/tmp/$tarball" "https://download.swift.org/swift-6.4.1-release/ubi10/swift-6.4.1-RELEASE/$tarball"
+          echo "180ca7843cd092f2bcce230ab59c3b025159a41e81696e6543f349405f34d321  /tmp/$tarball" | sha256sum -c -
+          tar -xzf "/tmp/$tarball" -C /opt
+          rm "/tmp/$tarball"
           ln -sf /usr/lib/libncursesw.so.6 /usr/lib/libncurses.so.6
           echo /opt/swift-6.4.1-RELEASE-ubi10/usr/bin >> "$GITHUB_PATH"
           # copies without the file capabilities a container cannot grant

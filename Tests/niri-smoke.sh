@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs the Linux build as a Wayland client of niri at scale 1.5, with niri nested in a
 # headless sway that grim photographs: in a column whose width niri leaves to the
-# window, then fullscreen, then closed by niri. Screenshots land in $2.
+# window, then fullscreen, on the next image, then closed by niri. Screenshots land in $2.
 set -eu
 bin=$1
 shots=$2
@@ -58,18 +58,21 @@ done
 export NIRI_SOCKET
 
 shot() { sleep 1; WAYLAND_DISPLAY=$host grim "$shots/$1.png"; }
-# the column is as wide as the 640x400 gradient at 100%, the zoom it gets in a 617-high tile
-expect_width() {
+# the column is as wide as the 640x400 gradient at 100%, the zoom it gets in a 617-high
+# tile, and the window keeps the tile's height
+expect_size() {
     niri msg windows
-    width=$(niri msg windows | awk '/Window size:/ { print $3 }')
-    [ "$width" = 640 ] || { echo "window is $width wide, expected 640" >&2; exit 1; }
+    size=$(niri msg windows | awk '/Window size:/ { print $3 "x" $5 }')
+    [ "$size" = 640x617 ] || { echo "window is $size, expected 640x617" >&2; exit 1; }
 }
 
 WAYLAND_DISPLAY=$nested timeout 60 "$bin" "$pics" &
 pid=$!
 sleep 3
-shot 1-tiled && expect_width
+shot 1-tiled && expect_size
 niri msg action fullscreen-window && shot 2-fullscreen
-niri msg action fullscreen-window && shot 3-tiled-again && expect_width
+niri msg action fullscreen-window && shot 3-tiled-again && expect_size
+WAYLAND_DISPLAY=$nested wtype -s 300 j && shot 4-next-image
+niri msg windows
 niri msg action close-window
 wait "$pid" # niri's close ends the viewer; a hang fails the timeout
