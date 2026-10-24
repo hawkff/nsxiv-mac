@@ -17,6 +17,7 @@ final class WaylandUI: ViewerUI {
     private var wmBase: OpaquePointer?
     private var seat: OpaquePointer?
     private var seatVersion: UInt32 = 0
+    private var wmBaseVersion: UInt32 = 0
     private var decorations: OpaquePointer?
     private var csd = false // no server-side decorations, as on GNOME: the window draws a title bar
     private var fractionalScaling: OpaquePointer?
@@ -71,7 +72,8 @@ final class WaylandUI: ViewerUI {
     private var lastTitleClick: UInt32?
     private let sway = ProcessInfo.processInfo.environment["SWAYSOCK"] != nil
     private let desktops = Set((ProcessInfo.processInfo.environment["XDG_CURRENT_DESKTOP"] ?? "").split(separator: ":"))
-    private var probe: (popup: OpaquePointer, role: OpaquePointer, surface: OpaquePointer)?
+    private var probe: (popup: OpaquePointer, role: OpaquePointer, surface: OpaquePointer, positioner: OpaquePointer,
+                        retried: Bool)?
     private var probed: (x: Int32, y: Int32, width: Int32, height: Int32)?
     private var room: CGRect? // the probed work area around the window, during the resize that waited on it
     private var swayRoom: CGSize? // what a floating window's content may take in its sway workspace
@@ -173,6 +175,7 @@ final class WaylandUI: ViewerUI {
             wl_output_add_listener(proxy, Self.outputListener, data)
         case "xdg_wm_base":
             wmBase = proxy
+            wmBaseVersion = min(version, newestVersion)
             xdg_wm_base_add_listener(proxy, Self.wmBaseListener, data)
         case "zxdg_decoration_manager_v1": decorations = proxy
         case "wp_fractional_scale_manager_v1": fractionalScaling = proxy
@@ -757,14 +760,13 @@ final class WaylandUI: ViewerUI {
         let surface = wl_compositor_create_surface(compositor)
         let role = xdg_wm_base_get_xdg_surface(wmBase, surface)
         let popup = xdg_surface_get_popup(role, xdgSurface, positioner)
-        xdg_positioner_destroy(positioner)
-        guard let surface, let role, let popup else { return }
+        guard let positioner, let surface, let role, let popup else { return }
         let data = Unmanaged.passUnretained(self).toOpaque()
         xdg_popup_add_listener(popup, Self.probeListener, data)
         xdg_surface_add_listener(role, Self.probeSurfaceListener, data)
         wl_surface_commit(surface) // no buffer: only asks for the popup's configure
         wl_display_flush(display)
-        probe = (popup, role, surface)
+        probe = (popup, role, surface, positioner, false)
         probed = nil
         // a compositor that never answers gets no cap
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250)) { [weak self] in
@@ -772,11 +774,25 @@ final class WaylandUI: ViewerUI {
         }
     }
 
+    // mutter 48 leaves a new popup untrimmed and trims it once repositioned
+    private func probeConfigured(_ serial: UInt32) {
+        guard let probe else { return }
+        if !probe.retried, wmBaseVersion >= 3, let p = probed, p.width >= 1 << 20 || p.height >= 1 << 20 {
+            xdg_surface_ack_configure(probe.role, serial)
+            xdg_popup_reposition(probe.popup, probe.positioner, 1)
+            wl_display_flush(display)
+            self.probe?.retried = true
+            return
+        }
+        probeAnswered()
+    }
+
     private func probeAnswered() {
         guard let probe else { return }
         xdg_popup_destroy(probe.popup)
         xdg_surface_destroy(probe.role)
         wl_surface_destroy(probe.surface)
+        xdg_positioner_destroy(probe.positioner)
         self.probe = nil
         // relative to the window's top-left; a popup no compositor trimmed means no limit
         let unlimited = CGRect(x: -1e9, y: -1e9, width: 2e9, height: 2e9)
@@ -1069,7 +1085,7 @@ final class WaylandUI: ViewerUI {
 
     // the xdg_surface configure closes the popup's configure sequence
     private static let probeSurfaceListener = make(xdg_surface_listener(
-        configure: { data, _, _ in WaylandUI.ui(data).probeAnswered() }))
+        configure: { data, _, serial in WaylandUI.ui(data).probeConfigured(serial) }))
 
     private static let decorationListener = make(zxdg_toplevel_decoration_v1_listener(
         configure: { data, _, mode in
