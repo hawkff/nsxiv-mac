@@ -151,6 +151,7 @@ final class Viewer {
 
     func resizeGrid(_ size: CGSize) {
         grid.viewSize = size
+        grid.reveal(current) // the column count changes with the width
     }
 
     func pan(dx: CGFloat, dy: CGFloat) { changeView { $0.scroll(dx: dx, dy: dy) } }
@@ -243,11 +244,16 @@ final class Viewer {
         ui?.invalidateThumbnails([entry])
         guard !thumbnailMode else { return }
         stopAnimation()
+        let oldSize = viewport.imageSize
         image = ui?.loadImage(entry.url)
         frameIndex = 0
         errorText = image == nil ? "could not load: \(entry.url.lastPathComponent)" : nil
+        // a fit mode fits a file whose size changed, say one a key-handler turned
+        let size = displaySize ?? .zero
+        viewport.setImageSize(size, resetView: size != oldSize && viewport.scaleMode != .manual)
+        ui?.imageChanged()
+        ui?.viewChanged()
         ui?.fitWindow()
-        showFrame()
         if image?.isAnimated == true { startAnimation() }
         ui?.barChanged()
     }

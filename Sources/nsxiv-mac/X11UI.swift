@@ -75,7 +75,7 @@ final class X11UI: ViewerUI {
         attrs.border_pixel = 0
         attrs.background_pixel = background.pixel
         attrs.event_mask = KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask
-            | StructureNotifyMask | ExposureMask
+            | StructureNotifyMask | ExposureMask | PropertyChangeMask
         let win = XCreateWindow(dpy, XRootWindow(dpy, screen), 0, 0, UInt32(size.width), UInt32(size.height), 0,
                                 depth, UInt32(InputOutput), visual,
                                 UInt(CWColormap | CWBorderPixel | CWBackPixel | CWEventMask), &attrs)
@@ -147,6 +147,7 @@ final class X11UI: ViewerUI {
                 pointerMoved(to: CGPoint(x: Int(ev.xmotion.x), y: Int(ev.xmotion.y)))
             case ConfigureNotify: resized(Int(ev.xconfigure.width), Int(ev.xconfigure.height))
             case Expose: if ev.xexpose.count == 0 { setNeedsRedraw() }
+            case PropertyNotify: if ev.xproperty.atom == wmState { fullscreenChanged() }
             case ClientMessage: if UInt(bitPattern: ev.xclient.data.l.0) == wmDelete { viewer.quit() }
             default: break
             }
@@ -175,11 +176,13 @@ final class X11UI: ViewerUI {
         let p = CGPoint(x: Int(b.x), y: Int(b.y))
         let inCanvas = Int(b.y) < canvasHeight
         switch Int32(b.button) {
-        case Button1:
+        case Button1 where !viewer.thumbnailMode:
             pointer = p
             dragging = true
             dragged = false
-            guard viewer.thumbnailMode, inCanvas, let i = viewer.grid.index(at: p) else { return }
+        case Button1:
+            // no drag starts here, so the release after a double click cannot navigate
+            guard inCanvas, let i = viewer.grid.index(at: p) else { return }
             if let last = lastClick, last.index == i, b.time &- last.time < 400 {
                 lastClick = nil
                 viewer.open(i)
@@ -346,7 +349,6 @@ final class X11UI: ViewerUI {
     }
 
     func toggleFullscreen() {
-        fullscreen.toggle()
         guard mapped else {
             // an unmapped window states it; the window manager reads that when it maps it
             var state = wmFullscreen
@@ -356,14 +358,34 @@ final class X11UI: ViewerUI {
             }
             return
         }
+        // the window manager answers with a property change, see fullscreenChanged
         var ev = XEvent()
         ev.xclient.type = ClientMessage
         ev.xclient.window = win
         ev.xclient.message_type = wmState
         ev.xclient.format = 32
-        ev.xclient.data.l.0 = fullscreen ? 1 : 0 // _NET_WM_STATE_ADD, _NET_WM_STATE_REMOVE
+        ev.xclient.data.l.0 = 2 // _NET_WM_STATE_TOGGLE
         ev.xclient.data.l.1 = Int(bitPattern: wmFullscreen)
         XSendEvent(dpy, XRootWindow(dpy, screen), 0, SubstructureNotifyMask | SubstructureRedirectMask, &ev)
+    }
+
+    // follows the window manager's state, which its own fullscreen shortcut changes too
+    private func fullscreenChanged() {
+        var type: Atom = 0
+        var format: Int32 = 0
+        var count: UInt = 0, after: UInt = 0
+        var data: UnsafeMutablePointer<UInt8>?
+        guard XGetWindowProperty(dpy, win, wmState, 0, 64, 0, atomType, &type, &format, &count, &after,
+                                 &data) == Success else { return }
+        defer { if let data { XFree(data) } }
+        // format 32 items arrive as C longs
+        let now = data.map { bytes in
+            bytes.withMemoryRebound(to: Atom.self, capacity: Int(count)) { atoms in
+                (0..<Int(count)).contains { atoms[$0] == wmFullscreen }
+            }
+        } ?? false
+        guard now != fullscreen else { return }
+        fullscreen = now
         if !fullscreen { fitWindow() }
     }
 
@@ -400,6 +422,7 @@ final class X11UI: ViewerUI {
         var frames: [Imlib_Image] = []
         var delays: [TimeInterval] = []
         var previous = Imlib_Frame_Info() // the last frame's disposal and area
+        var undo: Imlib_Image? // the canvas before the last frame, kept when that frame asks to be undone
         for n in 1...first.frame_count {
             guard let raw = imlib_load_image_frame(path, n) else { break }
             imlib_context_set_image(raw)
@@ -408,18 +431,24 @@ final class X11UI: ViewerUI {
             let fw = info.frame_w > 0 ? info.frame_w : imlib_image_get_width()
             let fh = info.frame_h > 0 ? info.frame_h : imlib_image_get_height()
             // start from the canvas the previous frame asked to leave
-            let restore = previous.frame_flags & IMLIB_FRAME_DISPOSE_PREV != 0 && frames.count >= 2
-            imlib_context_set_image(restore ? frames[frames.count - 2] : frames.last ?? blank)
-            guard let canvas = imlib_clone_image() else {
+            let undone = previous.frame_flags & IMLIB_FRAME_DISPOSE_PREV != 0
+            imlib_context_set_image(undone ? undo ?? blank : frames.last ?? blank)
+            let canvas = imlib_clone_image()
+            if let old = undo {
+                imlib_context_set_image(old)
+                imlib_free_image()
+                undo = nil
+            }
+            guard let canvas else {
                 imlib_context_set_image(raw)
                 imlib_free_image_and_decache()
                 break
             }
             imlib_context_set_image(canvas)
-            if previous.frame_flags & IMLIB_FRAME_DISPOSE_CLEAR != 0
-                || previous.frame_flags & IMLIB_FRAME_DISPOSE_PREV != 0 && frames.count < 2 {
+            if previous.frame_flags & IMLIB_FRAME_DISPOSE_CLEAR != 0 {
                 clear(previous.frame_x, previous.frame_y, previous.frame_w, previous.frame_h)
             }
+            if info.frame_flags & IMLIB_FRAME_DISPOSE_PREV != 0 { undo = imlib_clone_image() }
             imlib_context_set_blend(info.frame_flags & IMLIB_FRAME_BLEND != 0 ? 1 : 0)
             imlib_blend_image_onto_image(raw, 1, 0, 0, fw, fh, info.frame_x, info.frame_y, fw, fh)
             frames.append(canvas)
@@ -430,8 +459,10 @@ final class X11UI: ViewerUI {
             imlib_context_set_image(raw)
             imlib_free_image_and_decache()
         }
-        imlib_context_set_image(blank)
-        imlib_free_image()
+        for image in [blank, undo].compactMap({ $0 }) {
+            imlib_context_set_image(image)
+            imlib_free_image()
+        }
         guard frames.count > 1 else {
             for frame in frames {
                 imlib_context_set_image(frame)

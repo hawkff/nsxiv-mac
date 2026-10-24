@@ -19,7 +19,7 @@ chmod +x "$handler"
 
 shot() { sleep 1; import -window root "$shots/$1.png"; }
 
-"$bin" -o "$pics" >"$pics/marked" &
+timeout 60 "$bin" -o "$pics" >"$pics/marked" & # a viewer that misses q fails the run
 pid=$!
 sleep 2
 xdotool mousemove 40 40 # without a window manager, keys go to the window under the pointer
