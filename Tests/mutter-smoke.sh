@@ -3,7 +3,9 @@
 # monitors (default 1), and checks that a window that grows for a larger image stays on the
 # monitor it was on. mutter puts the small first window in the middle of a monitor, and the
 # slideshow's second image needs most of it: grown from its top-left corner, the window would
-# run past the monitor's bottom-right edge. Run under dbus-run-session.
+# run past the monitor's bottom-right edge. On one monitor mutter moves it back; with two,
+# mutter would let it spread onto the next one, so the viewer must grow only as far as its
+# own monitor allows. Run under dbus-run-session.
 set -eu
 bin=$1
 monitors=${2:-1}
@@ -13,7 +15,8 @@ magick -size 1200x700 gradient:red-blue "$pics/2-large.png"
 log=$(mktemp)
 
 XDG_RUNTIME_DIR=$(mktemp -d)
-export XDG_RUNTIME_DIR
+XDG_CURRENT_DESKTOP=GNOME
+export XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP
 unset DISPLAY WAYLAND_DISPLAY SWAYSOCK
 trap 'kill ${pid:-} ${mutter:-} 2>/dev/null || true' EXIT
 set --
@@ -32,17 +35,19 @@ pid=$!
 sleep 6 # the large image shows from 4 to 8 seconds
 kill -0 "$pid"
 
-asked=$(sed -n 's/.*Constraining .* to \(-*[0-9]*\),\(-*[0-9]*\) \([0-9]*\)x\([0-9]*\)$/\1 \2 \3 \4/p' "$log" |
-    awk '$3 >= 1000 && ($1 % 1280 + $3 > 1280 || $2 + $4 > 800)' | head -1)
+past=$(sed -n 's/.*Constraining .* to \(-*[0-9]*\),\(-*[0-9]*\) \([0-9]*\)x\([0-9]*\)$/\1 \2 \3 \4/p' "$log" |
+    awk '$3 > 400 && ($1 % 1280 + $3 > 1280 || $2 + $4 > 800)' | head -1)
 final=$(sed -n 's/.*info->current is \(-*[0-9]*\),\(-*[0-9]*\) \([0-9]*\)x\([0-9]*\) after.*/\1 \2 \3 \4/p' "$log" |
-    awk '$3 >= 1000' | tail -1)
-echo "monitors: $monitors x 1280x800; asked for: ${asked:-nothing past an edge}; placed at: ${final:-nothing}"
-[ -n "$asked" ] || { echo "the large image never asked to run past an edge" >&2; tail -40 "$log" >&2; exit 1; }
-[ -n "$final" ] || { echo "mutter logged no placement for the large image" >&2; tail -40 "$log" >&2; exit 1; }
-# shellcheck disable=SC2086
-set -- $asked
-left=$(($1 / 1280 * 1280)) # the monitor the window asked to grow on
+    awk '$3 > 400' | tail -1)
+echo "monitors: $monitors x 1280x800; asked past an edge: ${past:-never}; placed at: ${final:-nothing}"
+[ -n "$final" ] || { echo "the window did not grow for the large image" >&2; tail -40 "$log" >&2; exit 1; }
+if [ "$monitors" -eq 1 ]; then
+    [ -n "$past" ] || { echo "the window never asked to run past the edge, so mutter was not tested" >&2; exit 1; }
+else
+    [ -z "$past" ] || { echo "the viewer asked to run onto the next monitor: $past" >&2; exit 1; }
+fi
 # shellcheck disable=SC2086
 set -- $final
-[ "$1" -ge "$left" ] && [ "$2" -ge 0 ] && [ $(($1 + $3)) -le $((left + 1280)) ] && [ $(($2 + $4)) -le 800 ] ||
-    { echo "mutter left the grown window past its monitor's edge" >&2; exit 1; }
+left=$(($1 / 1280 * 1280)) # the monitor the window is on
+[ "$1" -ge 0 ] && [ "$2" -ge 0 ] && [ $(($1 + $3)) -le $((left + 1280)) ] && [ $(($2 + $4)) -le 800 ] ||
+    { echo "the grown window ran past its monitor's edge" >&2; exit 1; }

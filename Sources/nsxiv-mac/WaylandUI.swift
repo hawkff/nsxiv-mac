@@ -70,6 +70,10 @@ final class WaylandUI: ViewerUI {
     private var cursorShown = false // an enter or a new scale wants the cursor set again
     private var lastTitleClick: UInt32?
     private let sway = ProcessInfo.processInfo.environment["SWAYSOCK"] != nil
+    private let desktops = Set((ProcessInfo.processInfo.environment["XDG_CURRENT_DESKTOP"] ?? "").split(separator: ":"))
+    private var probe: (popup: OpaquePointer, role: OpaquePointer, surface: OpaquePointer)?
+    private var probed: (x: Int32, y: Int32, width: Int32, height: Int32)?
+    private var room: CGSize? // what a probe found, during the resize that waited on it
     private var swayRoom: CGSize? // what a floating window's content may take in its sway workspace
     private var swayFrom: CGSize? // the size before a burst of resizes, until sway places the window
 
@@ -282,7 +286,13 @@ final class WaylandUI: ViewerUI {
         // the 800x600 default overflows 1280x800 at scale 1.5
         if w == 0 { w = min(wanted.width, maxSize.width.rounded(.down)) }
         if h == 0 { h = min(wanted.height, maxSize.height.rounded(.down)) }
-        let width = max(1, Int(w)), height = max(1, Int(h))
+        var width = max(1, Int(w)), height = max(1, Int(h))
+        if requested.width == 0, requested.height == 0, size.width > 0, width > size.width || height > size.height,
+           probesRoom {
+            guard let room = takeRoom() else { return } // the probe's answer calls back here
+            width = min(width, max(size.width, Int(room.width)))
+            height = min(height, max(size.height, Int(room.height)))
+        }
         guard width != size.width || height != size.height else { return }
         let old = CGSize(width: size.width, height: size.height)
         size = (width, height)
@@ -704,6 +714,67 @@ final class WaylandUI: ViewerUI {
         }
     }
 
+    // MARK: - room probe
+
+    // Most compositors keep a window's top-left corner when it grows and give a client no way
+    // to move itself; mutter moves it back on screen, though not onto its own monitor. A client
+    // can still ask how much room it has: an unmapped popup anchored at the window's top-left,
+    // as large as can be and allowed only to shrink, comes back trimmed to the work area of the
+    // window's screen, and the window grows only that far.
+    private var probesRoom: Bool {
+        if sway || desktops.contains("KDE") { return false } // they place the window themselves
+        if desktops.contains("GNOME") { return outputs.count > 1 }
+        return true
+    }
+
+    // the room a probe found; otherwise a probe starts and the caller waits for it
+    private func takeRoom() -> CGSize? {
+        if room == nil { startProbe() }
+        return room
+    }
+
+    private func startProbe() {
+        guard probe == nil, let wmBase, let compositor, let xdgSurface else { return }
+        let positioner = xdg_wm_base_create_positioner(wmBase)
+        xdg_positioner_set_size(positioner, 1 << 20, 1 << 20)
+        xdg_positioner_set_anchor_rect(positioner, 0, 0, 1, 1)
+        xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_TOP_LEFT.rawValue)
+        xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT.rawValue)
+        xdg_positioner_set_constraint_adjustment(positioner, XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_RESIZE_X.rawValue
+                                                     | XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_RESIZE_Y.rawValue)
+        let surface = wl_compositor_create_surface(compositor)
+        let role = xdg_wm_base_get_xdg_surface(wmBase, surface)
+        let popup = xdg_surface_get_popup(role, xdgSurface, positioner)
+        xdg_positioner_destroy(positioner)
+        guard let surface, let role, let popup else { return }
+        let data = Unmanaged.passUnretained(self).toOpaque()
+        xdg_popup_add_listener(popup, Self.probeListener, data)
+        xdg_surface_add_listener(role, Self.probeSurfaceListener, data)
+        wl_surface_commit(surface) // no buffer: only asks for the popup's configure
+        wl_display_flush(display)
+        probe = (popup, role, surface)
+        probed = nil
+        // a compositor that never answers gets no cap
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250)) { [weak self] in
+            if self?.probe?.popup == popup { self?.probeAnswered() }
+        }
+    }
+
+    private func probeAnswered() {
+        guard let probe else { return }
+        xdg_popup_destroy(probe.popup)
+        xdg_surface_destroy(probe.role)
+        wl_surface_destroy(probe.surface)
+        self.probe = nil
+        // the popup sits at x, y of the window's geometry, which is negative space when the
+        // corner was outside the work area
+        room = probed.map { CGSize(width: Int($0.x) + Int($0.width), height: Int($0.y) + Int($0.height)) }
+            ?? CGSize(width: Int(Int32.max), height: Int(Int32.max))
+        probed = nil
+        applySize()
+        room = nil // the window may move before it grows again
+    }
+
     // MARK: - sway
 
     // sway keeps a floating window's top-left corner when the window resizes itself and sends
@@ -973,6 +1044,18 @@ final class WaylandUI: ViewerUI {
 
     private static let wmBaseListener = make(xdg_wm_base_listener(
         ping: { _, base, serial in xdg_wm_base_pong(base, serial) }))
+
+    private static let probeListener: UnsafeMutablePointer<xdg_popup_listener> = {
+        var l = xdg_popup_listener()
+        l.configure = { data, _, x, y, width, height in WaylandUI.ui(data).probed = (x, y, width, height) }
+        l.popup_done = { data, _ in WaylandUI.ui(data).probeAnswered() }
+        l.repositioned = { _, _, _ in }
+        return make(l)
+    }()
+
+    // the xdg_surface configure closes the popup's configure sequence
+    private static let probeSurfaceListener = make(xdg_surface_listener(
+        configure: { data, _, _ in WaylandUI.ui(data).probeAnswered() }))
 
     private static let decorationListener = make(zxdg_toplevel_decoration_v1_listener(
         configure: { data, _, mode in
