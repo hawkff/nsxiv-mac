@@ -330,9 +330,9 @@ final class WaylandUI: ViewerUI {
 
     func fitWindow() {
         guard let image = viewer.fittedSize, image.width > 0, image.height > 0 else { return }
-        let barH = CGFloat(chrome), limit = maxSize
-        let fit = min(1, limit.width / image.width, (limit.height - barH) / image.height)
-        wanted = CGSize(width: (image.width * fit).rounded(), height: (image.height * fit).rounded() + barH)
+        let rows = CGFloat(chrome), limit = maxSize
+        let fit = min(1, limit.width / image.width, (limit.height - rows) / image.height)
+        wanted = CGSize(width: (image.width * fit).rounded(), height: (image.height * fit).rounded() + rows)
         if configured, !fullscreen { applySize() }
     }
 
