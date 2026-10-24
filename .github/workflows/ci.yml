@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    runs-on: nscloud-macos-sequoia-arm64-6x14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Build
