@@ -75,7 +75,7 @@ final class X11UI: ViewerUI {
         attrs.border_pixel = 0
         attrs.background_pixel = background.pixel
         attrs.event_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask
-            | PointerMotionMask | StructureNotifyMask | ExposureMask | PropertyChangeMask
+            | PointerMotionMask | StructureNotifyMask | ExposureMask | PropertyChangeMask | FocusChangeMask
         let win = XCreateWindow(dpy, XRootWindow(dpy, screen), 0, 0, UInt32(size.width), UInt32(size.height), 0,
                                 depth, UInt32(InputOutput), visual,
                                 UInt(CWColormap | CWBorderPixel | CWBackPixel | CWEventMask), &attrs)
@@ -118,7 +118,7 @@ final class X11UI: ViewerUI {
 
     private struct RepeatScan {
         let keycode: UInt32
-        var released = false
+        var ended = false
     }
 
     private static func color(_ name: String, _ dpy: OpaquePointer, _ colormap: Colormap) -> XColor {
@@ -180,17 +180,22 @@ final class X11UI: ViewerUI {
     }
 
     // A held key outruns large decodes. The presses of that key queued while the last one
-    // was handled go, past other events but not past the key's release, so taps still count.
+    // was handled go, past other events but not past the key's release or a focus change
+    // (which may take the release elsewhere), so taps still count.
     private func dropRepeats(of keycode: UInt32) {
         var scan = RepeatScan(keycode: keycode)
         var dropped = XEvent()
         while withUnsafeMutablePointer(to: &scan, { scan in
             XCheckIfEvent(dpy, &dropped, { _, event, arg in
-                guard let e = event?.pointee, let arg, e.type == KeyPress || e.type == KeyRelease else { return 0 }
+                guard let e = event?.pointee, let arg else { return 0 }
                 let scan = UnsafeMutableRawPointer(arg).assumingMemoryBound(to: RepeatScan.self)
-                guard e.xkey.keycode == scan.pointee.keycode, !scan.pointee.released else { return 0 }
-                if e.type == KeyRelease { scan.pointee.released = true }
-                return e.type == KeyPress ? 1 : 0
+                switch e.type {
+                case FocusIn, FocusOut: scan.pointee.ended = true
+                case KeyRelease where e.xkey.keycode == scan.pointee.keycode: scan.pointee.ended = true
+                case KeyPress where e.xkey.keycode == scan.pointee.keycode && !scan.pointee.ended: return 1
+                default: break
+                }
+                return 0
             }, UnsafeMutableRawPointer(scan).assumingMemoryBound(to: CChar.self))
         }) != 0 {}
     }
