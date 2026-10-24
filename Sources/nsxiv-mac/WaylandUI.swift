@@ -293,8 +293,8 @@ final class WaylandUI: ViewerUI {
         if requested.width == 0, requested.height == 0, size.width > 0, width > size.width || height > size.height,
            probesRoom {
             guard let room = takeRoom() else { return } // the probe's answer calls back here
-            width = min(width, grownLimit(size.width, room.minX, room.maxX))
-            height = min(height, grownLimit(size.height, room.minY, room.maxY))
+            width = min(width, Viewer.grownLimit(size.width, room: room.minX, room.maxX, keepsTopLeft: keepsTopLeft))
+            height = min(height, Viewer.grownLimit(size.height, room: room.minY, room.maxY, keepsTopLeft: keepsTopLeft))
         }
         guard width != size.width || height != size.height else { return }
         let old = CGSize(width: size.width, height: size.height)
@@ -729,15 +729,6 @@ final class WaylandUI: ViewerUI {
 
     // labwc and Wayfire keep the top-left corner of a window that grows itself
     private var keepsTopLeft: Bool { !desktops.isDisjoint(with: ["labwc", "wayfire"]) }
-
-    // the largest extent the window may grow to inside lo...hi, its edges at 0 and extent: a
-    // window that keeps its top-left corner needs room after it; one that keeps its center,
-    // half the growth on each side; where the compositor is unknown, growth must suit both
-    private func grownLimit(_ extent: Int, _ lo: CGFloat, _ hi: CGFloat) -> Int {
-        let after = hi - CGFloat(extent), before = -lo
-        let growth = keepsTopLeft ? after : min(after, 2 * before)
-        return extent + max(0, Int(growth.rounded(.down)))
-    }
 
     // the room a probe found; otherwise a probe starts and the caller waits for it
     private func takeRoom() -> CGRect? {

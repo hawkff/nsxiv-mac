@@ -1,14 +1,17 @@
 #!/bin/sh
 # Runs the Linux build in headless labwc or Wayfire ($2), compositors that keep a window's
-# top-left corner when it grows and give a client no way to move itself. A window rule puts
-# the viewer near the bottom-right corner of the 1280x720 screen; the slideshow's second image
-# needs most of the screen, and the viewer must grow only as far as the screen allows. That
-# image has four colored quarters: a screenshot shows all four at the same size only when no
-# part of the window ran past the screen edge. The screenshot lands in $3.
+# top-left corner when it grows and give a client no way to move itself, on $4 side-by-side
+# 1280x720 screens (default 1). A window rule puts the viewer near the bottom-right corner of
+# the last screen; the slideshow's second image needs most of a screen, and the viewer must
+# grow to that screen's edge and no further. That image has four colored quarters: a
+# screenshot shows all four at the same size only when no part of the window ran past the
+# edge. The screenshot lands in $3.
 set -eu
 bin=$1
 compositor=$2
 shots=$3
+outputs=${4:-1}
+right=$((outputs * 1280))
 mkdir -p "$shots"
 pics=$(mktemp -d)
 conf=$(mktemp -d)
@@ -25,15 +28,15 @@ case $compositor in labwc) XDG_CURRENT_DESKTOP=labwc:wlroots ;; *) XDG_CURRENT_D
 export XDG_CURRENT_DESKTOP
 trap 'kill ${pid:-} ${server:-} 2>/dev/null || true' EXIT
 fail() { echo "$1" >&2; tail -40 "$log" >&2; exit 1; }
-export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
+export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=$outputs
 case $compositor in
 labwc)
-    cat >"$conf/rc.xml" <<'EOF'
+    cat >"$conf/rc.xml" <<EOF
 <?xml version="1.0"?>
 <labwc_config>
   <windowRules>
     <windowRule identifier="nsxiv-mac">
-      <action name="MoveTo" x="1000" y="420" />
+      <action name="MoveTo" x="$((right - 280))" y="420" />
     </windowRule>
   </windowRules>
 </labwc_config>
@@ -67,7 +70,7 @@ export WAYLAND_DISPLAY=$socket
 pid=$!
 sleep 6 # the large image shows from 4 to 8 seconds
 kill -0 "$pid"
-shot=$shots/$compositor.png
+shot=$shots/$compositor-$outputs.png
 grim "$shot"
 
 # the bounding box of each quarter's color, as width height x y; a capture of an XRGB output
@@ -88,4 +91,6 @@ for color in yellow cyan blue; do
     [ "${dw#-}" -le 1 ] && [ "${dh#-}" -le 1 ] || fail "the $color quarter is cut: the window ran past the edge"
 done
 [ "$w_magenta" -gt 50 ] || fail "the large image is not on screen"
-[ "$right_blue" -le 1280 ] && [ $((bottom_blue + 20)) -le 720 ] || fail "the status bar ran past the edge"
+[ "$right_blue" -le "$right" ] && [ $((bottom_blue + 20)) -le 720 ] || fail "the status bar ran past the edge"
+# the image is as wide as the window, which grew to the screen's right edge
+[ "$right_blue" -ge $((right - 10)) ] || fail "the window did not grow to the screen's edge"

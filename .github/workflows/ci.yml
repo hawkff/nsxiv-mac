@@ -70,7 +70,9 @@ jobs:
       - name: Run under Weston, which leaves decorations to the window
         run: sh Tests/weston-smoke.sh .build/release/nsxiv-mac weston-shots
       - name: Run under labwc, where a growing window must stay on screen
-        run: sh Tests/stacking-smoke.sh .build/release/nsxiv-mac labwc stacking-shots
+        run: |
+          sh Tests/stacking-smoke.sh .build/release/nsxiv-mac labwc stacking-shots 1
+          sh Tests/stacking-smoke.sh .build/release/nsxiv-mac labwc stacking-shots 2
       - name: Run under mutter, where a growing window must stay on screen
         run: |
           dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac 1

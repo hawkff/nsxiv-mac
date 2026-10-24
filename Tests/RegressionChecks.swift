@@ -71,6 +71,16 @@ struct RegressionChecks {
         assert(fitted(20) == status && fitted(19) == "100% | 2/4" && fitted(9) == "2/4" && fitted(2) == "2/4",
                "a narrow bar drops status fields from the front and keeps the index")
 
+        // a 200-wide window 1000 from the room's left edge, 80 from its right
+        assert(Viewer.grownLimit(200, room: -1000, 280, keepsTopLeft: true) == 280,
+               "a window that keeps its top-left corner grows into the room after it")
+        assert(Viewer.grownLimit(200, room: -1000, 280, keepsTopLeft: false) == 280
+               && Viewer.grownLimit(200, room: -10, 1000, keepsTopLeft: false) == 220,
+               "where the anchoring is unknown, growth fits a centered window too")
+        assert(Viewer.grownLimit(200, room: 50, 1000, keepsTopLeft: false) == .max
+               && Viewer.grownLimit(200, room: -10, 150, keepsTopLeft: true) == .max,
+               "a window parked across an edge grows freely")
+
         checkBindings(files: (0..<5).map { _ in FileEntry(path: imageURL.path) })
         #if os(macOS)
         try checkWindows(imageURL: imageURL)
