@@ -809,9 +809,13 @@ final class WaylandUI: ViewerUI {
               let runtime = env["XDG_RUNTIME_DIR"] else { return }
         let pid = getpid(), plugin = "nsxiv-mac-\(pid)", path = "\(runtime)/\(plugin).js"
         helperQueue.async {
+            // an earlier process with this pid may have left its script behind
+            unlink(path)
+            _ = kwin("/Scripting", "org.kde.kwin.Scripting.unloadScript", "string:\(plugin)")
             let fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
             guard fd >= 0 else { return }
-            defer { unlink(path) } // KWin has read the file once run returns
+            // Plasma 5 may still be reading the file when run returns
+            defer { helperQueue.asyncAfter(deadline: .now() + 30) { unlink(path) } }
             let source = Array(kwinHelper(pid: pid, plugin: plugin).utf8)
             let written = source.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
             close(fd)
@@ -819,8 +823,10 @@ final class WaylandUI: ViewerUI {
                   let reply = kwin("/Scripting", "org.kde.kwin.Scripting.loadScript", "string:\(path)", "string:\(plugin)"),
                   let id = String(decoding: reply, as: UTF8.self).split(whereSeparator: \.isWhitespace).last
                     .flatMap({ Int($0) }), id >= 0 else { return }
-            if kwin("/Scripting/Script\(id)", "org.kde.kwin.Script.run") == nil {
-                _ = kwin("/Scripting", "org.kde.kwin.Scripting.start") // Plasma 5 keeps scripts at another path
+            // Plasma 6 puts the script at /Scripting/Script<id>, Plasma 5 at /<id>
+            if kwin("/Scripting/Script\(id)", "org.kde.kwin.Script.run") == nil,
+               kwin("/\(id)", "org.kde.kwin.Script.run") == nil {
+                _ = kwin("/Scripting", "org.kde.kwin.Scripting.unloadScript", "string:\(plugin)")
             }
         }
     }
@@ -852,8 +858,17 @@ final class WaylandUI: ViewerUI {
                           : workspace.clientArea(KWin.MaximizeArea, w);
         }
 
+        // fullscreen, maximized or tiled: KWin, not the viewer, sizes the window
+        function held(w, r) {
+            if (w.fullScreen || w.tile) return true;
+            if (w.maximizeMode !== undefined) return w.maximizeMode !== 0;
+            const a = workspace.clientArea(KWin.MaximizeArea, w);
+            return r.x === a.x && r.y === a.y && r.width === a.width && r.height === a.height;
+        }
+
+        // the viewer has one window; Plasma 5 gives resourceClass as bytes, so the pid alone picks it
         function track(w) {
-            if (tracked !== null || w.pid !== pid || w.resourceClass !== "nsxiv-mac") return;
+            if (tracked !== null || w.pid !== pid) return;
             tracked = w;
             let last = rect(w.frameGeometry), before = null;
             const check = new QTimer();
@@ -866,8 +881,10 @@ final class WaylandUI: ViewerUI {
             check.timeout.connect(function () {
                 const old = before, now = rect(w.frameGeometry);
                 before = null;
+                // last keeps the frame from before KWin took over, so a restore compares with it
+                if (w.deleted || held(w, now)) return;
                 last = now;
-                if (w.deleted || w.minimized || w.move || w.resize || w.fullScreen) return;
+                if (w.minimized || w.move || w.resize) return;
                 if (now.width === old.width && now.height === old.height) return;
                 const area = areaAround(old, w);
                 if (!inside(old, area) || inside(now, area)) return;

@@ -26,9 +26,13 @@ for _ in $(seq 150); do
     sleep 0.1
 done
 [ -S "$XDG_RUNTIME_DIR/wayland-k" ] || { echo "KWin did not start" >&2; cat "$log" >&2; exit 1; }
-sleep 1 # its D-Bus interfaces come up after the socket
 
 kwin() { dbus-send --session --print-reply --dest=org.kde.KWin "$@"; }
+# KWin's D-Bus interfaces come up after its socket
+for _ in $(seq 75); do
+    kwin /Scripting org.kde.kwin.Scripting.isScriptLoaded string:none >/dev/null 2>&1 && break
+    sleep 0.2
+done
 cat >"$observer" <<'EOF'
 function show(r) { return [r.x, r.y, r.width, r.height].map(Math.round).join(" "); }
 function watch(w) {
@@ -44,28 +48,35 @@ workspace.windowList().forEach(watch);
 workspace.windowAdded.connect(watch);
 EOF
 id=$(kwin /Scripting org.kde.kwin.Scripting.loadScript string:"$observer" string:observer | awk 'END { print $2 }')
+case $id in '' | *[!0-9]*) echo "KWin did not load the observer: '$id'" >&2; tail -40 "$log" >&2; exit 1 ;; esac
 kwin "/Scripting/Script$id" org.kde.kwin.Script.run >/dev/null
 
 WAYLAND_DISPLAY=wayland-k "$bin" -S 4 "$pics" &
 pid=$!
-sleep 6 # the large image shows from 4 to 8 seconds
+frames() { sed -n 's/.*nsxiv-test frame //p' "$log"; }
+# the large image shows from 4 to 8 seconds; wait for its frame, then for the correction
+sleep 4
+for _ in $(seq 30); do
+    frames | awk '$3 >= 1000 { found = 1 } END { exit !found }' && break
+    sleep 0.2
+done
+sleep 0.5
 kill -0 "$pid"
 kwin /Scripting org.kde.kwin.Scripting.isScriptLoaded string:"nsxiv-mac-$pid" | grep -q 'boolean true' ||
     { echo "the viewer loaded no KWin script" >&2; tail -40 "$log" >&2; exit 1; }
 
 area=$(sed -n 's/.*nsxiv-test area //p' "$log" | tail -1)
-frame=$(sed -n 's/.*nsxiv-test frame //p' "$log" | tail -1)
+frame=$(frames | awk '$3 >= 1000' | tail -1) # the slideshow returns to the small image at 8 seconds
 echo "work area: ${area:-none}; window: ${frame:-none}"
-[ -n "$area" ] && [ -n "$frame" ] || { echo "the observer logged no window" >&2; tail -60 "$log" >&2; exit 1; }
+[ -n "$area" ] || { echo "the observer logged no window" >&2; tail -60 "$log" >&2; exit 1; }
+[ -n "$frame" ] || { echo "the window did not grow for the large image" >&2; tail -60 "$log" >&2; exit 1; }
 # shellcheck disable=SC2086
 set -- $area $frame
-[ "$7" -ge 1000 ] || { echo "the window did not grow for the large image" >&2; exit 1; }
 [ "$5" -ge "$1" ] && [ "$6" -ge "$2" ] && [ $(($5 + $7)) -le $(($1 + $3)) ] && [ $(($6 + $8)) -le $(($2 + $4)) ] ||
     { echo "the grown window ran past the work area" >&2; tail -40 "$log" >&2; exit 1; }
-frames=$(sed -n 's/.*nsxiv-test frame //p' "$log")
-echo "frames: $(echo "$frames" | tr '\n' ';')"
+echo "frames: $(frames | tr '\n' ';')"
 # the grown window first ran past the edge, so the viewer's script had something to fix
-echo "$frames" | awk -v r=$(($1 + $3)) -v b=$(($2 + $4)) \
+frames | awk -v r=$(($1 + $3)) -v b=$(($2 + $4)) \
     '$3 >= 1000 && ($1 + $3 > r || $2 + $4 > b) { found = 1 } END { exit !found }' ||
     { echo "the window never ran past the edge, so nothing was tested" >&2; exit 1; }
 
