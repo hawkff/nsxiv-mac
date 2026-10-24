@@ -17,7 +17,6 @@ final class WaylandUI: ViewerUI {
     private var wmBase: OpaquePointer?
     private var seat: OpaquePointer?
     private var seatVersion: UInt32 = 0
-    private var wmBaseVersion: UInt32 = 0
     private var decorations: OpaquePointer?
     private var csd = false // no server-side decorations, as on GNOME: the window draws a title bar
     private var fractionalScaling: OpaquePointer?
@@ -72,8 +71,7 @@ final class WaylandUI: ViewerUI {
     private var lastTitleClick: UInt32?
     private let sway = ProcessInfo.processInfo.environment["SWAYSOCK"] != nil
     private let desktops = Set((ProcessInfo.processInfo.environment["XDG_CURRENT_DESKTOP"] ?? "").split(separator: ":"))
-    private var probe: (popup: OpaquePointer, role: OpaquePointer, surface: OpaquePointer, positioner: OpaquePointer,
-                        retried: Bool)?
+    private var probe: (popup: OpaquePointer, role: OpaquePointer, surface: OpaquePointer)?
     private var probed: (x: Int32, y: Int32, width: Int32, height: Int32)?
     private var room: CGRect? // the probed work area around the window, during the resize that waited on it
     private var swayRoom: CGSize? // what a floating window's content may take in its sway workspace
@@ -175,7 +173,6 @@ final class WaylandUI: ViewerUI {
             wl_output_add_listener(proxy, Self.outputListener, data)
         case "xdg_wm_base":
             wmBase = proxy
-            wmBaseVersion = min(version, newestVersion)
             xdg_wm_base_add_listener(proxy, Self.wmBaseListener, data)
         case "zxdg_decoration_manager_v1": decorations = proxy
         case "wp_fractional_scale_manager_v1": fractionalScaling = proxy
@@ -720,18 +717,15 @@ final class WaylandUI: ViewerUI {
     // MARK: - room probe
 
     // Most compositors give a client no way to move its window, and few keep a growing window
-    // on its screen; mutter keeps it on screen, though not on its own monitor. A client can
-    // still ask how much room it has: an unmapped popup centered on the window, as large as can
-    // be and allowed only to shrink, comes back trimmed to the work area of the window's
-    // screen, and the window grows only as far as that leaves room.
-    private var probesRoom: Bool {
-        if sway || desktops.contains("KDE") { return false } // they place the window themselves
-        if desktops.contains("GNOME") { return outputs.count > 1 }
-        return true
-    }
+    // on screen. A client can still ask how much room it has: an unmapped popup centered on the
+    // window, as large as can be and allowed only to shrink, comes back trimmed to the work
+    // area of the window's screen, and the window grows only as far as that leaves room. sway
+    // and KDE place the window themselves; mutter keeps it on screen and leaves such a popup
+    // untrimmed.
+    private var probesRoom: Bool { !sway && desktops.isDisjoint(with: ["KDE", "GNOME"]) }
 
-    // labwc, Wayfire and mutter keep the top-left corner of a window that grows itself
-    private var keepsTopLeft: Bool { !desktops.isDisjoint(with: ["labwc", "wayfire", "GNOME"]) }
+    // labwc and Wayfire keep the top-left corner of a window that grows itself
+    private var keepsTopLeft: Bool { !desktops.isDisjoint(with: ["labwc", "wayfire"]) }
 
     // the largest extent the window may grow to inside lo...hi, its edges at 0 and extent: a
     // window that keeps its top-left corner needs room after it; one that keeps its center,
@@ -760,13 +754,14 @@ final class WaylandUI: ViewerUI {
         let surface = wl_compositor_create_surface(compositor)
         let role = xdg_wm_base_get_xdg_surface(wmBase, surface)
         let popup = xdg_surface_get_popup(role, xdgSurface, positioner)
-        guard let positioner, let surface, let role, let popup else { return }
+        xdg_positioner_destroy(positioner)
+        guard let surface, let role, let popup else { return }
         let data = Unmanaged.passUnretained(self).toOpaque()
         xdg_popup_add_listener(popup, Self.probeListener, data)
         xdg_surface_add_listener(role, Self.probeSurfaceListener, data)
         wl_surface_commit(surface) // no buffer: only asks for the popup's configure
         wl_display_flush(display)
-        probe = (popup, role, surface, positioner, false)
+        probe = (popup, role, surface)
         probed = nil
         // a compositor that never answers gets no cap
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250)) { [weak self] in
@@ -774,32 +769,17 @@ final class WaylandUI: ViewerUI {
         }
     }
 
-    // mutter 48 leaves a new popup untrimmed and trims it once repositioned
-    private func probeConfigured(_ serial: UInt32) {
-        guard let probe else { return }
-        if !probe.retried, wmBaseVersion >= 3, let p = probed, p.width >= 1 << 20 || p.height >= 1 << 20 {
-            xdg_surface_ack_configure(probe.role, serial)
-            xdg_popup_reposition(probe.popup, probe.positioner, 1)
-            wl_display_flush(display)
-            self.probe?.retried = true
-            return
-        }
-        probeAnswered()
-    }
-
     private func probeAnswered() {
         guard let probe else { return }
         xdg_popup_destroy(probe.popup)
         xdg_surface_destroy(probe.role)
         wl_surface_destroy(probe.surface)
-        xdg_positioner_destroy(probe.positioner)
         self.probe = nil
         // relative to the window's top-left; a popup no compositor trimmed means no limit
         let unlimited = CGRect(x: -1e9, y: -1e9, width: 2e9, height: 2e9)
         room = probed.flatMap { p in
             p.width >= 1 << 20 || p.height >= 1 << 20 ? nil : CGRect(x: Int(p.x), y: Int(p.y), width: Int(p.width), height: Int(p.height))
         } ?? unlimited
-        warn("room probe: \(String(describing: probed)) for \(size)") // TEMP: CI diagnosis
         probed = nil
         applySize()
         room = nil // the window may move before it grows again
@@ -1085,7 +1065,7 @@ final class WaylandUI: ViewerUI {
 
     // the xdg_surface configure closes the popup's configure sequence
     private static let probeSurfaceListener = make(xdg_surface_listener(
-        configure: { data, _, serial in WaylandUI.ui(data).probeConfigured(serial) }))
+        configure: { data, _, _ in WaylandUI.ui(data).probeAnswered() }))
 
     private static let decorationListener = make(zxdg_toplevel_decoration_v1_listener(
         configure: { data, _, mode in
