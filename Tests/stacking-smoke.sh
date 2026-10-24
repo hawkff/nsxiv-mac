@@ -70,10 +70,11 @@ kill -0 "$pid"
 shot=$shots/$compositor.png
 grim "$shot"
 
-# the bounding box of each quarter's color, as width height x y
+# the bounding box of each quarter's color, as width height x y; a capture of an XRGB output
+# may carry any alpha
 box() {
-    magick "$shot" -fill black +opaque "$1" -fill white -opaque "$1" -trim -format '%w %h %X %Y' info: |
-        tr -d '+'
+    magick "$shot" -alpha off -fuzz 3% -fill black +opaque "$1" -fill white -opaque "$1" -trim \
+        -format '%w %h %X %Y' info: | tr -d '+'
 }
 for color in magenta yellow cyan blue; do
     set -- $(box "$color")
