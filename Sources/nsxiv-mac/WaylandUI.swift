@@ -75,6 +75,8 @@ final class WaylandUI: ViewerUI {
         .split(separator: ":"))
     private var probe: (popup: OpaquePointer, role: OpaquePointer, surface: OpaquePointer)?
     private var probes = 0 // tells a probe's timeout from a later probe's
+    private var committed = (width: 0, height: 0) // the size of the last buffer the compositor got
+    private var probeAfterCommit = false
     private var probed: (x: Int32, y: Int32, width: Int32, height: Int32)?
     private var room: CGRect? // the probed work area around the window, during the resize that waited on it
     private var swayRoom: CGSize? // what a floating window's content may take in its sway workspace
@@ -407,6 +409,11 @@ final class WaylandUI: ViewerUI {
         wl_surface_damage_buffer(surface, 0, 0, Int32.max, Int32.max)
         wl_surface_commit(surface)
         buffer.busy = true
+        committed = size
+        if probeAfterCommit {
+            probeAfterCommit = false
+            applySize() // the growth that waited for this size to reach the compositor
+        }
         wl_display_flush(display)
     }
 
@@ -730,9 +737,12 @@ final class WaylandUI: ViewerUI {
     // labwc and Wayfire keep the top-left corner of a window that grows itself
     private var keepsTopLeft: Bool { !desktops.isDisjoint(with: ["labwc", "wayfire"]) }
 
-    // the room a probe found; otherwise a probe starts and the caller waits for it
+    // the room a probe found; otherwise a probe starts and the caller waits for it. The popup's
+    // anchor must lie inside the window the compositor has, so a size not yet committed waits.
     private func takeRoom() -> CGRect? {
-        if room == nil { startProbe() }
+        if room == nil {
+            if committed == size { startProbe() } else { probeAfterCommit = true }
+        }
         return room
     }
 
@@ -740,7 +750,7 @@ final class WaylandUI: ViewerUI {
         guard probe == nil, let wmBase, let compositor, let xdgSurface else { return }
         let positioner = xdg_wm_base_create_positioner(wmBase)
         xdg_positioner_set_size(positioner, 1 << 20, 1 << 20)
-        xdg_positioner_set_anchor_rect(positioner, 0, 0, Int32(size.width), Int32(size.height))
+        xdg_positioner_set_anchor_rect(positioner, 0, 0, Int32(committed.width), Int32(committed.height))
         xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_NONE.rawValue)
         xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_NONE.rawValue)
         xdg_positioner_set_constraint_adjustment(positioner, XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_RESIZE_X.rawValue
