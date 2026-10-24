@@ -705,18 +705,20 @@ final class WaylandUI: ViewerUI {
     // sway keeps a floating window's top-left corner when the window resizes itself and sends
     // no configure_bounds, so a growing window ran off the screen. Its IPC can do what the
     // macOS side does: keep the window's center, keep it inside the workspace, and cap the
-    // size to the workspace. A burst of resizes gets one placement.
+    // size to the workspace. Resizes within 50 ms share one placement.
     private func swayResized(from old: CGSize) {
         guard sway, swayFrom == nil, states.isDisjoint(with: Self.heldStates) else { return }
         swayFrom = old
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [self] in
             guard let from = swayFrom else { return }
             swayFrom = nil
+            // fullscreen or maximized meanwhile: sway draws no title bar or borders then
+            guard states.isDisjoint(with: Self.heldStates) else { return }
             let to = CGSize(width: size.width, height: size.height), pid = Int(getpid())
             Self.swayQueue.async {
                 let room = Self.swayPlace(pid: pid, from: from, to: to)
                 DispatchQueue.main.async { [self] in
-                    guard let room, room != swayRoom else { return }
+                    guard let room, room != swayRoom, states.isDisjoint(with: Self.heldStates) else { return }
                     swayRoom = room
                     fitWindow()
                     if configured, !fullscreen { applySize() } // the grid's size too
@@ -731,7 +733,8 @@ final class WaylandUI: ViewerUI {
     private static func swayPlace(pid: Int, from old: CGSize, to new: CGSize) -> CGSize? {
         guard let tree = swaymsg("-t", "get_tree") as? [String: Any],
               let found = swayFind(pid: pid, in: tree, workspace: nil),
-              found.node["type"] as? String == "floating_con", let id = found.node["id"] as? Int,
+              found.node["type"] as? String == "floating_con", (found.node["fullscreen_mode"] as? Int ?? 0) == 0,
+              let id = found.node["id"] as? Int,
               let below = swayRect(found.node["rect"]), let content = swayRect(found.node["window_rect"])
         else { return nil }
         // like i3, sway's rect leaves out the title bar, which deco_rect describes
@@ -752,7 +755,10 @@ final class WaylandUI: ViewerUI {
 
     private static func swayFind(pid: Int, in node: [String: Any],
                                  workspace: CGRect?) -> (node: [String: Any], workspace: CGRect)? {
-        let workspace = node["type"] as? String == "workspace" ? swayRect(node["rect"]) : workspace
+        let isWorkspace = node["type"] as? String == "workspace"
+        // hidden scratchpad windows sit on a stand-in workspace that spans every output
+        if isWorkspace, (node["name"] as? String)?.hasPrefix("__i3") == true { return nil }
+        let workspace = isWorkspace ? swayRect(node["rect"]) : workspace
         if node["pid"] as? Int == pid, let workspace { return (node, workspace) }
         let children = (node["nodes"] as? [[String: Any]] ?? []) + (node["floating_nodes"] as? [[String: Any]] ?? [])
         for child in children {
