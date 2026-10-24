@@ -1,5 +1,5 @@
 #!/bin/sh
-# Runs the Linux build in headless labwc or Wayfire ($2), compositors that keep a window's
+# Runs the Linux build in headless labwc, Wayfire or river ($2), compositors that keep a window's
 # top-left corner when it grows and give a client no way to move itself, on $4 side-by-side
 # 1280x720 screens (default 1). A window rule puts the viewer near the bottom-right corner of
 # the last screen; the slideshow's second image needs most of a screen, and the viewer must
@@ -53,6 +53,10 @@ xwayland = false
 park = on created if app_id is "nsxiv-mac" then move 1000 420
 EOF
     wayfire -c "$conf/wayfire.ini" 2>"$log" &
+    ;;
+river)
+    river -c "riverctl rule-add -app-id nsxiv-mac float; riverctl rule-add -app-id nsxiv-mac position $((right - 280)) 420" \
+        2>"$log" &
     ;;
 *) fail "unknown compositor $compositor" ;;
 esac
