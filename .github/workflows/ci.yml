@@ -46,7 +46,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends libx11-dev libimlib2-dev libfontconfig-dev \
             libwayland-dev libxkbcommon-dev pkg-config xvfb xauth xdotool imagemagick fonts-dejavu-core \
-            sway grim wtype jq weston
+            sway grim wtype jq weston mutter dbus-daemon
       - name: Build
         run: swift build -c release --static-swift-stdlib
       - name: Smoke test
@@ -69,6 +69,8 @@ jobs:
         run: sh Tests/wayland-smoke.sh .build/release/nsxiv-mac wayland-shots
       - name: Run under Weston, which leaves decorations to the window
         run: sh Tests/weston-smoke.sh .build/release/nsxiv-mac weston-shots
+      - name: Run under mutter, where a growing window must stay on screen
+        run: dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -95,7 +97,7 @@ jobs:
       - name: Install Swift, X11, Wayland, Imlib2 and niri
         run: |
           pacman -Syu --noconfirm --needed base-devel libx11 imlib2 fontconfig wayland libxkbcommon \
-            libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim wtype imagemagick mesa
+            libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim wtype imagemagick mesa kwin
           # the toolchain the AUR's swift-bin repackages, with ncurses under its Arch name; the
           # hash is of the tarball the Swift 6.x release key signed
           tarball=swift-6.4.1-RELEASE-ubi10.tar.gz
@@ -113,6 +115,8 @@ jobs:
         run: .build/release/nsxiv-mac -v
       - name: Run under niri
         run: sh Tests/niri-smoke.sh .build/release/nsxiv-mac niri-shots
+      - name: Run under KWin, where a growing window must stay on screen
+        run: dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac
       - uses: actions/upload-artifact@v4
         if: always()
         with:

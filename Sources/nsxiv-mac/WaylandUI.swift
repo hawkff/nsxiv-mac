@@ -128,6 +128,7 @@ final class WaylandUI: ViewerUI {
         viewer.start()
         wl_surface_commit(surface) // with no buffer: asks the compositor for the first configure
         wl_display_flush(display)
+        Self.loadKWinHelper()
         let source = DispatchSource.makeReadSource(fileDescriptor: wl_display_get_fd(display), queue: .main)
         source.setEventHandler { [unowned self] in
             if wl_display_dispatch(self.display) < 0 {
@@ -718,7 +719,7 @@ final class WaylandUI: ViewerUI {
             // fullscreen or maximized meanwhile: sway draws no title bar or borders then
             guard states.isDisjoint(with: Self.heldStates) else { return }
             let to = CGSize(width: size.width, height: size.height), pid = Int(getpid())
-            Self.swayQueue.async {
+            Self.helperQueue.async {
                 let room = Self.swayPlace(pid: pid, from: from, to: to)
                 DispatchQueue.main.async { [self] in
                     guard let room, room != swayRoom, states.isDisjoint(with: Self.heldStates) else { return }
@@ -730,7 +731,8 @@ final class WaylandUI: ViewerUI {
         }
     }
 
-    private static let swayQueue = DispatchQueue(label: "sway-ipc")
+    // swaymsg and dbus-send run here, off the main queue and one at a time
+    private static let helperQueue = DispatchQueue(label: "compositor-helpers")
 
     // moves the window of pid in sway's tree; returns the room for content in its workspace
     private static func swayPlace(pid: Int, from old: CGSize, to new: CGSize) -> CGSize? {
@@ -778,16 +780,119 @@ final class WaylandUI: ViewerUI {
 
     // sway's own client speaks its IPC, at the socket SWAYSOCK names
     private static func swaymsg(_ args: String...) -> Any? {
+        output(of: ["swaymsg", "-r"] + args).flatMap { try? JSONSerialization.jsonObject(with: $0) }
+    }
+
+    // a helper program's output; nil when it does not start or exits with an error
+    private static func output(of arguments: [String]) -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["swaymsg", "-r"] + args
+        process.arguments = arguments
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return nil }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return try? JSONSerialization.jsonObject(with: data)
+        return process.terminationStatus == 0 ? data : nil
+    }
+
+    // MARK: - KWin
+
+    // KWin keeps a window's top-left corner when the window resizes itself and lets it grow
+    // past the work area. On KDE a KWin script, loaded once over D-Bus, watches this process's
+    // window from inside KWin and moves it back in when a resize pushes it past an edge, as
+    // mutter does on GNOME. Nothing goes over D-Bus per image, and the script unloads itself
+    // when the window goes.
+    private static func loadKWinHelper() {
+        let env = ProcessInfo.processInfo.environment
+        guard env["XDG_CURRENT_DESKTOP"]?.split(separator: ":").contains("KDE") == true,
+              let runtime = env["XDG_RUNTIME_DIR"] else { return }
+        let pid = getpid(), plugin = "nsxiv-mac-\(pid)", path = "\(runtime)/\(plugin).js"
+        helperQueue.async {
+            let fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+            guard fd >= 0 else { return }
+            defer { unlink(path) } // KWin has read the file once run returns
+            let source = Array(kwinHelper(pid: pid, plugin: plugin).utf8)
+            let written = source.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+            close(fd)
+            guard written == source.count,
+                  let reply = kwin("/Scripting", "org.kde.kwin.Scripting.loadScript", "string:\(path)", "string:\(plugin)"),
+                  let id = String(decoding: reply, as: UTF8.self).split(whereSeparator: \.isWhitespace).last
+                    .flatMap({ Int($0) }), id >= 0 else { return }
+            if kwin("/Scripting/Script\(id)", "org.kde.kwin.Script.run") == nil {
+                _ = kwin("/Scripting", "org.kde.kwin.Scripting.start") // Plasma 5 keeps scripts at another path
+            }
+        }
+    }
+
+    private static func kwin(_ path: String, _ method: String, _ args: String...) -> Data? {
+        output(of: ["dbus-send", "--session", "--print-reply", "--reply-timeout=5000", "--dest=org.kde.KWin",
+                    path, method] + args)
+    }
+
+    // KWin reports a new frame before it applies a fullscreen, maximized or tiled state, so the
+    // check waits for KWin's event loop; then a frame that grew past the work area of the screen
+    // it was on moves back inside, unless the user had parked it across an edge
+    private static func kwinHelper(pid: Int32, plugin: String) -> String {
+        """
+        // loaded by nsxiv-mac for the window of process \(pid); it unloads itself with the window
+        const pid = \(pid), plugin = "\(plugin)";
+        let tracked = null;
+
+        function rect(r) { return { x: r.x, y: r.y, width: r.width, height: r.height }; }
+        function inside(r, a) {
+            return r.x >= a.x && r.y >= a.y && r.x + r.width <= a.x + a.width && r.y + r.height <= a.y + a.height;
+        }
+        function unload() {
+            callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", plugin);
+        }
+        function areaAround(r, w) {
+            const output = workspace.screenAt ? workspace.screenAt({ x: r.x + r.width / 2, y: r.y + r.height / 2 }) : null;
+            return output ? workspace.clientArea(KWin.MaximizeArea, output, workspace.currentDesktop)
+                          : workspace.clientArea(KWin.MaximizeArea, w);
+        }
+
+        function track(w) {
+            if (tracked !== null || w.pid !== pid || w.resourceClass !== "nsxiv-mac") return;
+            tracked = w;
+            let last = rect(w.frameGeometry), before = null;
+            const check = new QTimer();
+            check.singleShot = true;
+            check.interval = 0;
+            w.frameGeometryChanged.connect(function () {
+                if (before === null) before = last;
+                check.start();
+            });
+            check.timeout.connect(function () {
+                const old = before, now = rect(w.frameGeometry);
+                before = null;
+                last = now;
+                if (w.deleted || w.minimized || w.move || w.resize || w.fullScreen) return;
+                if (now.width === old.width && now.height === old.height) return;
+                const area = areaAround(old, w);
+                if (!inside(old, area) || inside(now, area)) return;
+                last = {
+                    x: Math.max(area.x, Math.min(now.x, area.x + area.width - now.width)),
+                    y: Math.max(area.y, Math.min(now.y, area.y + area.height - now.height)),
+                    width: now.width,
+                    height: now.height,
+                };
+                w.frameGeometry = last;
+            });
+        }
+
+        (workspace.windowList ? workspace.windowList() : workspace.clientList()).forEach(track);
+        (workspace.windowAdded || workspace.clientAdded).connect(track);
+        (workspace.windowRemoved || workspace.clientRemoved).connect(function (w) {
+            if (w === tracked) unload();
+        });
+        const giveUp = new QTimer(); // a viewer that never shows its window
+        giveUp.singleShot = true;
+        giveUp.interval = 60000;
+        giveUp.timeout.connect(function () { if (tracked === null) unload(); });
+        giveUp.start();
+        """
     }
 
     // MARK: - listeners
