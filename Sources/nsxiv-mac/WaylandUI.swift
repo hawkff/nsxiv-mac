@@ -454,7 +454,7 @@ final class WaylandUI: ViewerUI {
                 imlib_context_set_image(below.image)
                 imlib_free_image()
             }
-            let rows = imlib_create_image_using_data(Int32(width), Int32(height - top),
+            let rows: Imlib_Image = imlib_create_image_using_data(Int32(width), Int32(height - top),
                                                      (pixels + top * width * 4).assumingMemoryBound(to: UInt32.self))
             below = (top, rows)
             return rows
