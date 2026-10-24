@@ -814,8 +814,7 @@ final class WaylandUI: ViewerUI {
             _ = kwin("/Scripting", "org.kde.kwin.Scripting.unloadScript", "string:\(plugin)")
             let fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
             guard fd >= 0 else { return }
-            // Plasma 5 may still be reading the file when run returns
-            defer { helperQueue.asyncAfter(deadline: .now() + 30) { unlink(path) } }
+            defer { unlink(path) } // run replies once KWin has read the file
             let source = Array(kwinHelper(pid: pid, plugin: plugin).utf8)
             let written = source.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
             close(fd)
