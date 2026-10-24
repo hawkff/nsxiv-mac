@@ -70,8 +70,11 @@ final class WaylandUI: ViewerUI {
     private var cursorShown = false // an enter or a new scale wants the cursor set again
     private var lastTitleClick: UInt32?
     private let sway = ProcessInfo.processInfo.environment["SWAYSOCK"] != nil
-    private let desktops = Set((ProcessInfo.processInfo.environment["XDG_CURRENT_DESKTOP"] ?? "").split(separator: ":"))
+    // sessions spell these differently: Wayfire, wayfire, ubuntu:GNOME
+    private let desktops = Set((ProcessInfo.processInfo.environment["XDG_CURRENT_DESKTOP"] ?? "").lowercased()
+        .split(separator: ":"))
     private var probe: (popup: OpaquePointer, role: OpaquePointer, surface: OpaquePointer)?
+    private var probes = 0 // tells a probe's timeout from a later probe's
     private var probed: (x: Int32, y: Int32, width: Int32, height: Int32)?
     private var room: CGRect? // the probed work area around the window, during the resize that waited on it
     private var swayRoom: CGSize? // what a floating window's content may take in its sway workspace
@@ -722,7 +725,7 @@ final class WaylandUI: ViewerUI {
     // area of the window's screen, and the window grows only as far as that leaves room. sway
     // and KDE place the window themselves; mutter keeps it on screen and leaves such a popup
     // untrimmed.
-    private var probesRoom: Bool { !sway && desktops.isDisjoint(with: ["KDE", "GNOME"]) }
+    private var probesRoom: Bool { !sway && desktops.isDisjoint(with: ["kde", "gnome"]) }
 
     // labwc and Wayfire keep the top-left corner of a window that grows itself
     private var keepsTopLeft: Bool { !desktops.isDisjoint(with: ["labwc", "wayfire"]) }
@@ -763,9 +766,11 @@ final class WaylandUI: ViewerUI {
         wl_display_flush(display)
         probe = (popup, role, surface)
         probed = nil
+        probes += 1
         // a compositor that never answers gets no cap
+        let current = probes
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(250)) { [weak self] in
-            if self?.probe?.popup == popup { self?.probeAnswered() }
+            if let self, self.probe != nil, self.probes == current { self.probeAnswered() }
         }
     }
 
