@@ -259,6 +259,7 @@ final class WaylandUI: ViewerUI {
     private func configure(_ serial: UInt32) {
         let wasFullscreen = fullscreen, oldChrome = chrome
         states = Set(pendingStates)
+        warn("configure \(requested) states \(pendingStates) picked \(picked.last.map { "\($0)" } ?? "-") size \(size)") // TEMP
         let asked = CGSize(width: Int(requested.width), height: Int(requested.height))
         if states.contains(XDG_TOPLEVEL_STATE_RESIZING.rawValue), asked.width > 0, asked.height > 0 {
             wanted = asked // a dragged size lasts until the next image, as on X11

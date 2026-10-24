@@ -1,8 +1,8 @@
 #!/bin/sh
-# Runs the Linux build in Hyprland on a virtual display (vkms) with software rendering, as
-# root in a container. hyprctl floats the viewer near the bottom-right corner; the slideshow's
-# second image needs most of the screen, and the viewer must grow only as far as the screen
-# allows. hyprctl reports where the window is.
+# Runs the Linux build in Hyprland on a virtual 1024x768 display (vkms) with software
+# rendering, as root in a container. Window rules open the viewer floating near the
+# bottom-right corner; the slideshow's second image needs most of the screen, and the viewer
+# must grow only as far as the screen allows. hyprctl reports where the window is.
 set -eu
 bin=$1
 pics=$(mktemp -d)
@@ -20,6 +20,8 @@ trap 'kill ${pid:-} ${hypr:-} 2>/dev/null || true' EXIT
 fail() { echo "$1" >&2; tail -60 "$log" >&2; exit 1; }
 cat >"$conf" <<'EOF'
 monitor = , preferred, auto, 1
+windowrule = match:class ^(nsxiv-mac)$, float on
+windowrule = match:class ^(nsxiv-mac)$, move 784 468
 misc {
     disable_hyprland_logo = true
     disable_splash_rendering = true
@@ -44,10 +46,7 @@ echo "monitor: ${w}x$h at scale $3"
 
 WAYLAND_DISPLAY=$socket "$bin" -S 4 "$pics" &
 pid=$!
-sleep 1.5
-hyprctl dispatch setfloating "pid:$pid" >/dev/null
-hyprctl dispatch movewindowpixel "exact $((w - 240)) $((h - 300)),pid:$pid" >/dev/null
-sleep 4.5 # the large image shows from 4 to 8 seconds
+sleep 6 # the large image shows from 4 to 8 seconds
 kill -0 "$pid"
 window=$(hyprctl -j clients | jq -r --argjson pid "$pid" '.[] | select(.pid == $pid) | "\(.floating) \(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"')
 echo "window (floating x y width height): $window"
