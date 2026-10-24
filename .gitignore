@@ -4,9 +4,7 @@
 __MACOSX/
 
 #IDE
-.agents/
 .cursor
-AGENTS.md
 
 #folders
 /docs/
