@@ -12,8 +12,9 @@ the library nsxiv uses.
 - Window in the style of mpv: it takes each image's size, capped to the screen, and
   resizing keeps the aspect ratio. On macOS the image fills the window and the title
   bar fades in at the top edge. On Wayland a tiling compositor sets the size, and
-  resizing does not keep the aspect ratio; on sway a floating window keeps its
-  center and stays on screen. `-g WxH` fixes the size instead
+  resizing does not keep the aspect ratio. A floating window that grows stays on
+  screen on GNOME, KDE, and sway; on sway it also keeps its center. `-g WxH` fixes
+  the size instead
 - Thumbnail grid. On macOS QuickLook renders and caches the thumbnails and `-p`
   bypasses that cache; on Linux they stay in memory for the session
 - Plays animated GIF, APNG, and WebP; steps through single frames
@@ -57,6 +58,10 @@ window-rule {
 
 niri asks windows to draw their own title bar unless its config sets
 `prefer-no-csd`. With that setting, the viewer draws none.
+
+On KDE the viewer loads a small KWin script over D-Bus, through `dbus-send`, to
+keep its window on screen as it grows. The script watches only that viewer's
+window and unloads itself when the window closes.
 
 ## Usage
 
