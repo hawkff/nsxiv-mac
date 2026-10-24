@@ -142,8 +142,13 @@ final class X11UI: ViewerUI {
             case ButtonPress: buttonPressed(ev.xbutton)
             case ButtonRelease: buttonReleased(ev.xbutton)
             case MotionNotify:
-                // only the latest position matters
-                while XCheckTypedWindowEvent(dpy, win, MotionNotify, &ev) != 0 {}
+                // only the latest position matters, up to the next event of another kind
+                var next = XEvent()
+                while XEventsQueued(dpy, QueuedAlready) > 0 {
+                    XPeekEvent(dpy, &next)
+                    guard next.type == MotionNotify else { break }
+                    XNextEvent(dpy, &ev)
+                }
                 pointerMoved(to: CGPoint(x: Int(ev.xmotion.x), y: Int(ev.xmotion.y)))
             case ConfigureNotify: resized(Int(ev.xconfigure.width), Int(ev.xconfigure.height))
             case Expose: if ev.xexpose.count == 0 { setNeedsRedraw() }
