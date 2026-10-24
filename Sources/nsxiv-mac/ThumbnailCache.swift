@@ -12,12 +12,12 @@ final class ThumbnailCache {
         self.privateMode = privateMode
     }
 
+    func cached(_ entry: FileEntry) -> CGImage? {
+        memory.object(forKey: entry.path as NSString)
+    }
+
     func thumbnail(for entry: FileEntry, completion: @escaping (CGImage?) -> Void) {
         let key = entry.path as NSString
-        if let hit = memory.object(forKey: key) {
-            completion(hit)
-            return
-        }
         let deliver = { (img: CGImage?) in
             if let img { self.memory.setObject(img, forKey: key) }
             DispatchQueue.main.async { completion(img) }

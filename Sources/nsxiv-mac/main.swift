@@ -1,5 +1,8 @@
 import AppKit
 
+// a key-handler that stops reading its stdin must not kill the viewer
+signal(SIGPIPE, SIG_IGN)
+
 let options = Options.parse(Array(CommandLine.arguments.dropFirst()))
 
 var inputPaths = options.paths

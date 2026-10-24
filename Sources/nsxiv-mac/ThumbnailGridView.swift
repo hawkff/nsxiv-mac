@@ -1,15 +1,15 @@
 import AppKit
 
 final class ThumbnailGridView: NSView {
-    var files: [FileEntry] = [] { didSet { reloadAll() } }
+    var files: [FileEntry] = [] { didSet { needsDisplay = true } }
     var selection = 0
     var onOpen: ((Int) -> Void)?
     var onSelectionChange: (() -> Void)?
     var onToggleMark: ((Int) -> Void)?
     var cache: ThumbnailCache?
 
-    private var thumbs: [CGImage?] = []
-    private var requested: Set<Int> = []
+    // paths asked for and not cached yet; a failed one stays, so it is not asked for again
+    private var requested: Set<String> = []
     private var sizeIndex = Config.thumbSizeIndex
     private var scrollY: CGFloat = 0
 
@@ -58,14 +58,16 @@ final class ThumbnailGridView: NSView {
         let ni = sizeIndex + dir
         guard Config.thumbSizes.indices.contains(ni) else { return }
         sizeIndex = ni
-        requested.removeAll()
         clampScroll()
         needsDisplay = true
     }
 
-    func reloadAll() {
-        thumbs = Array(repeating: nil, count: files.count)
-        requested.removeAll()
+    // r, R and the key-handler: forget these thumbnails so the next draw generates them
+    func invalidate(_ entries: [FileEntry]) {
+        for entry in entries {
+            cache?.invalidate(entry)
+            requested.remove(entry.path)
+        }
         needsDisplay = true
     }
 
@@ -143,7 +145,7 @@ final class ThumbnailGridView: NSView {
         rect.origin.y -= scrollY
         let inner = rect.insetBy(dx: Config.thumbPadding, dy: Config.thumbPadding)
 
-        if let thumb = thumbs[i] {
+        if let thumb = cache?.cached(files[i]) {
             let tw = CGFloat(thumb.width), th = CGFloat(thumb.height)
             let scale = min(inner.width / tw, inner.height / th, 1)
             let dw = tw * scale, dh = th * scale
@@ -178,13 +180,11 @@ final class ThumbnailGridView: NSView {
     }
 
     private func request(_ i: Int) {
-        guard !requested.contains(i), let cache else { return }
-        requested.insert(i)
         let entry = files[i]
+        guard let cache, requested.insert(entry.path).inserted else { return }
         cache.thumbnail(for: entry) { [weak self] img in
-            guard let self, self.files.indices.contains(i),
-                  self.files[i].path == entry.path else { return }
-            self.thumbs[i] = img
+            guard let self else { return }
+            if img != nil { self.requested.remove(entry.path) }
             self.needsDisplay = true
         }
     }
@@ -205,8 +205,7 @@ final class ThumbnailGridView: NSView {
     override func rightMouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
         guard let i = indexAt(point: p) else { return }
-        select(i)
-        onToggleMark?(i)
+        onToggleMark?(i) // marks without moving the selection, like nsxiv
     }
 
     override func scrollWheel(with event: NSEvent) {

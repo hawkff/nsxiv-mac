@@ -47,10 +47,12 @@ final class ImageCanvasView: NSView {
         onViewChange?()
     }
 
+    // fit modes may go below the smallest zoom level, so pinch must too
+    private static let zoomRange = Config.zoomLevels.first! / 4 ... Config.zoomLevels.last!
+
     func setZoom(_ z: CGFloat, anchor: CGPoint? = nil) {
         guard image != nil else { return }
-        let minZ = Config.zoomLevels.first!, maxZ = Config.zoomLevels.last!
-        let new = max(minZ, min(maxZ, z))
+        let new = max(Self.zoomRange.lowerBound, min(Self.zoomRange.upperBound, z))
         let a = anchor ?? CGPoint(x: bounds.midX, y: bounds.midY)
         let ratio = new / zoom
         pan.x = a.x - (a.x - pan.x) * ratio
@@ -83,7 +85,7 @@ final class ImageCanvasView: NSView {
         case .fill: zoom = max(zw, zh)
         case .manual: break
         }
-        zoom = max(Config.zoomLevels.first! / 4, min(Config.zoomLevels.last!, zoom))
+        zoom = max(Self.zoomRange.lowerBound, min(Self.zoomRange.upperBound, zoom))
         centerImage()
     }
 

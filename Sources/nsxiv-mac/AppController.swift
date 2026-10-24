@@ -29,7 +29,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var contrast = 0
 
     private var fileWatcher: DispatchSourceFileSystemObject?
-    private let thumbCache: ThumbnailCache
     private var prefixExternal = false
     private var editor: EditController?
 
@@ -37,7 +36,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self.options = options
         self.files = files
         self.slideshowDelay = options.slideshow ?? Config.slideshowDelay
-        self.thumbCache = ThumbnailCache(privateMode: options.privateMode)
         self.current = max(0, min(files.count - 1, options.startAt - 1))
         self.alternate = current
         super.init()
@@ -119,7 +117,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             v.translatesAutoresizingMaskIntoConstraints = true
             contentStack.addSubview(v)
         }
-        grid.cache = thumbCache
+        grid.cache = ThumbnailCache(privateMode: options.privateMode)
         grid.files = files
 
         canvas.onNavigate = { [weak self] d in self?.navigate(d) }
@@ -261,17 +259,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateBar()
     }
 
-    private func reloadCurrent(keepView: Bool = true) {
-        stopAnimation()
+    // r, a changed file, the key-handler: a fresh thumbnail, and in image mode a fresh image
+    private func reloadCurrent() {
         guard files.indices.contains(current) else { return }
+        grid.invalidate([files[current]])
+        guard !thumbnailMode else { return }
+        stopAnimation()
         image = LoadedImage(url: files[current].url)
         frameIndex = 0
         fitWindow()
         canvas.errorText = image == nil
             ? "could not load: \(files[current].url.lastPathComponent)" : nil
-        canvas.setImage(processedFrame(), resetView: !keepView)
+        redrawFrame()
         if image?.isAnimated == true { startAnimation() }
-        thumbCache.invalidate(files[current])
         updateBar()
     }
 
@@ -338,8 +338,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return ctx.makeImage() ?? img
     }
 
-    private func redrawFrame(keepView: Bool = true) {
-        canvas.setImage(processedFrame(), resetView: !keepView)
+    private func redrawFrame() {
+        canvas.setImage(processedFrame(), resetView: false)
     }
 
     // MARK: - animation
@@ -357,6 +357,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self, let img = self.image else { return }
             self.frameIndex = (self.frameIndex + 1) % img.frameCount
             self.redrawFrame()
+            self.updateBar()
             self.scheduleNextFrame()
         }
     }
@@ -420,7 +421,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     // MARK: - auto-reload (FSEvents-style watcher; macOS equivalent of inotify)
 
+    private var pendingReload: DispatchWorkItem?
+
     private func watchCurrent() {
+        pendingReload?.cancel()
         fileWatcher?.cancel()
         fileWatcher = nil
         guard files.indices.contains(current) else { return }
@@ -430,20 +434,17 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             fileDescriptor: fd, eventMask: [.write, .extend, .rename, .delete],
             queue: .main)
         src.setEventHandler { [weak self] in
-            guard let self else { return }
-            let flags = src.data
-            if flags.contains(.delete) || flags.contains(.rename) {
-                // wait for the file to reappear (atomic save), then reload
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                    guard let self, self.files.indices.contains(self.current) else { return }
-                    if FileManager.default.fileExists(atPath: self.files[self.current].path) {
-                        self.reloadCurrent()
-                        self.watchCurrent()
-                    }
-                }
-            } else {
+            // editors write in chunks, or save a temp file and rename it over this one:
+            // reload once the file has been quiet for 0.2 s, then watch the new inode
+            self?.pendingReload?.cancel()
+            let reload = DispatchWorkItem { [weak self] in
+                guard let self, self.files.indices.contains(self.current),
+                      FileManager.default.fileExists(atPath: self.files[self.current].path) else { return }
                 self.reloadCurrent()
+                self.watchCurrent()
             }
+            self?.pendingReload = reload
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: reload)
         }
         src.setCancelHandler { close(fd) }
         src.resume()
@@ -480,11 +481,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if thumbnailMode {
             stopSlideshow()
             stopAnimation()
-            grid.files = files
             grid.select(current)
         } else {
-            setCurrent(grid.selection)
-            loadCurrent()
+            setCurrent(grid.selection) // loads the image
         }
         updateLayout()
     }
@@ -494,9 +493,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func toggleMark(at index: Int) {
         guard files.indices.contains(index) else { return }
         files[index].marked.toggle()
+        lastMarked = index
         syncMarks()
     }
 
+    // anchor of M: the image marked or unmarked last, as in nsxiv
     private var lastMarked = 0
     private func markRange() {
         guard files.indices.contains(lastMarked), files.indices.contains(current) else { return }
@@ -505,6 +506,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         for i in lo...hi {
             files[i].marked = state
         }
+        lastMarked = current
         syncMarks()
     }
 
@@ -524,21 +526,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private func syncMarks() {
         grid.files = files
-        grid.select(current)
         updateBar()
     }
 
     // MARK: - file removal
 
-    private func removeCurrentFromList() {
-        guard files.indices.contains(current) else { return }
-        files.remove(at: current)
-        if files.isEmpty {
-            quit()
-        }
-        current = min(current, files.count - 1)
-        alternate = min(alternate, files.count - 1)
-        lastMarked = min(lastMarked, files.count - 1)
+    private func removeFiles(at removed: Set<Int>) {
+        let kept = files.indices.filter { !removed.contains($0) }
+        guard kept.count < files.count else { return }
+        if kept.isEmpty { quit() }
+        // keep each index on its file; one that pointed at a removed file moves to the next
+        let remap = { (i: Int) in kept.firstIndex { $0 >= i } ?? kept.count - 1 }
+        current = remap(current)
+        alternate = remap(alternate)
+        lastMarked = remap(lastMarked)
+        files = kept.map { files[$0] }
         grid.files = files
         grid.select(current)
         if !thumbnailMode { loadCurrent() }
@@ -559,9 +561,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             warn("no executable key-handler at \(handler)")
             return
         }
-        let targets = files.contains(where: { $0.marked })
-            ? files.filter(\.marked).map(\.path)
-            : (files.indices.contains(current) ? [files[current].path] : [])
+        let marked = files.indices.filter { files[$0].marked }
+        let targets = marked.isEmpty ? (files.indices.contains(current) ? [current] : []) : marked
         guard !targets.isEmpty else { return }
 
         let proc = Process()
@@ -575,12 +576,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             warn("key-handler failed: \(error.localizedDescription)")
             return
         }
-        let data = Data((targets.joined(separator: "\n") + "\n").utf8)
-        pipe.fileHandleForWriting.write(data)
-        pipe.fileHandleForWriting.closeFile()
+        // a handler may stop reading early; with SIGPIPE ignored the write fails instead
+        try? pipe.fileHandleForWriting.write(contentsOf: Data(targets.map { files[$0].path + "\n" }.joined().utf8))
+        try? pipe.fileHandleForWriting.close()
         proc.waitUntilExit()
-        reloadCurrent()
-        updateBar()
+        // the handler may have edited, moved or deleted its files
+        grid.invalidate(targets.map { files[$0] })
+        let gone = targets.filter { !FileManager.default.fileExists(atPath: files[$0].path) }
+        if gone.isEmpty { reloadCurrent() } else { removeFiles(at: Set(gone)) }
     }
 
     // MARK: - edit mode
@@ -620,6 +623,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             // insert the edited copy right after the current image
             let insertAt = min(current + 1, files.count)
             files.insert(FileEntry(path: savedURL.path), at: insertAt)
+            if lastMarked >= insertAt { lastMarked += 1 }
             grid.files = files
             setCurrent(insertAt)
         }
@@ -680,9 +684,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 return false // let the text field receive keystrokes
             }
-            let flags = event.modifierFlags.intersection([.command])
-            if flags.contains(.command),
-               !"zsc".contains(event.charactersIgnoringModifiers ?? "") {
+            if event.modifierFlags.contains(.command),
+               !["z", "s", "c"].contains(event.charactersIgnoringModifiers?.lowercased()) {
                 return false // let menu shortcuts (cmd-q etc.) through
             }
             if let exit = ed.handleKey(event) {
@@ -772,15 +775,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case "G": setCurrent(files.count - 1); return true
         case "r": reloadCurrent(); return true
         case "R":
-            if thumbnailMode {
-                for f in files { thumbCache.invalidate(f) }
-                grid.reloadAll()
-            }
+            if thumbnailMode { grid.invalidate(files) }
             return true
-        case "D": removeCurrentFromList(); return true
+        case "D": removeFiles(at: [current]); return true
         case "m":
             toggleMark(at: current)
-            lastMarked = current
             if !thumbnailMode { navigate(1) }
             return true
         case "M": markRange(); return true
@@ -805,7 +804,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case "j": grid.moveSelection(.down); return true
             case "k": grid.moveSelection(.up); return true
             case "l": grid.moveSelection(.right); return true
-            case " ", "\r": switchMode(); return true
+            case " ": switchMode(); return true
             default: return false
             }
         }
