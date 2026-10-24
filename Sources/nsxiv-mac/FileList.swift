@@ -41,10 +41,11 @@ enum FileList {
         if !recursive { options.insert(.skipsSubdirectoryDescendants) }
         let paths = fm.enumerator(at: dir, includingPropertiesForKeys: nil, options: options)?
             .compactMap { item -> String? in
-                // fileExists follows symlinks, so linked images count, as with nsxiv's stat()
-                var isDir: ObjCBool = false
+                // stat() follows symlinks, so linked images count, as in nsxiv; a FIFO
+                // with an image name stays out, since opening it would block
+                var st = stat()
                 guard let url = item as? URL, isImagePath(url.path),
-                      fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue
+                      stat(url.path, &st) == 0, st.st_mode & S_IFMT == S_IFREG
                 else { return nil }
                 return url.path
             } ?? []

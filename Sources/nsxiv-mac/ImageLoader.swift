@@ -47,7 +47,9 @@ final class LoadedImage {
             d.append(LoadedImage.delay(source: src, index: i))
         }
         delays = d
-        frames.totalCostLimit = 256 << 20 // bytes of decoded frames kept for animation
+        // NSCache trims animation frames toward 256 MiB, a target it may overshoot; a still
+        // image keeps its one frame, which NSCache could drop for costing more than the limit
+        if frameCount > 1 { frames.totalCostLimit = 256 << 20 }
     }
 
     func frame(_ index: Int) -> CGImage? {

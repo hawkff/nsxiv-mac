@@ -282,7 +282,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         var img = raw
         if let adjusted = applyColorCorrection(img) { img = adjusted }
         if rotation != 0 || flipH || flipV {
-            img = applyTransform(img)
+            img = Self.transform(img, rotation: rotation, flipH: flipH, flipV: flipV)
         }
         return img
     }
@@ -325,15 +325,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
             : 1 + Double(contrast) * (Config.contrastMax - 1) / steps
     }
 
-    private func applyTransform(_ img: CGImage) -> CGImage {
+    // rotates clockwise, then flips the rotated image as it appears on screen
+    static func transform(_ img: CGImage, rotation: Int, flipH: Bool, flipV: Bool) -> CGImage {
         let w = CGFloat(img.width), h = CGFloat(img.height)
         let swapped = rotation % 180 != 0
         let outW = swapped ? h : w, outH = swapped ? w : h
         guard let ctx = CGContext.rgba(width: Int(outW), height: Int(outH)) else { return img }
         ctx.translateBy(x: outW / 2, y: outH / 2)
-        // screen-space rotation: CG y-axis points up, so negate for clockwise
-        ctx.rotate(by: -CGFloat(rotation) * .pi / 180)
         ctx.scaleBy(x: flipH ? -1 : 1, y: flipV ? -1 : 1)
+        // CG's y-axis points up, so a clockwise turn is a negative angle
+        ctx.rotate(by: -CGFloat(rotation) * .pi / 180)
         ctx.draw(img, in: CGRect(x: -w / 2, y: -h / 2, width: w, height: h))
         return ctx.makeImage() ?? img
     }
@@ -428,27 +429,38 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         fileWatcher?.cancel()
         fileWatcher = nil
         guard files.indices.contains(current) else { return }
-        let fd = open(files[current].path, O_EVTONLY)
+        let path = files[current].path
+        let fd = open(path, O_EVTONLY)
         guard fd >= 0 else { return }
         let src = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd, eventMask: [.write, .extend, .rename, .delete],
             queue: .main)
-        src.setEventHandler { [weak self] in
-            // editors write in chunks, or save a temp file and rename it over this one:
-            // reload once the file has been quiet for 0.2 s, then watch the new inode
-            self?.pendingReload?.cancel()
-            let reload = DispatchWorkItem { [weak self] in
-                guard let self, self.files.indices.contains(self.current),
-                      FileManager.default.fileExists(atPath: self.files[self.current].path) else { return }
-                self.reloadCurrent()
-                self.watchCurrent()
-            }
-            self?.pendingReload = reload
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: reload)
-        }
+        src.setEventHandler { [weak self] in self?.scheduleReload(of: path, attempts: 10) }
         src.setCancelHandler { close(fd) }
         src.resume()
         fileWatcher = src
+    }
+
+    // editors write in chunks, or save a temp file and rename it over the original:
+    // reload once the file has been quiet for 0.2 s, then watch the new inode
+    private func scheduleReload(of path: String, attempts: Int) {
+        pendingReload?.cancel()
+        let reload = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard FileManager.default.fileExists(atPath: path) else {
+                // a save that deletes before it writes leaves the path empty for a while
+                if attempts > 1 { self.scheduleReload(of: path, attempts: attempts - 1) }
+                return
+            }
+            self.grid.invalidate([FileEntry(path: path)])
+            // the grid selection may have moved on since this file was opened
+            guard self.files.indices.contains(self.current), self.files[self.current].path == path
+            else { return }
+            self.reloadCurrent()
+            self.watchCurrent()
+        }
+        pendingReload = reload
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: reload)
     }
 
     // MARK: - navigation
@@ -524,27 +536,37 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         syncMarks()
     }
 
+    // counted here, not in updateBar, which runs on every animation frame
+    private var markCount = 0
     private func syncMarks() {
+        markCount = files.reduce(0) { $1.marked ? $0 + 1 : $0 }
         grid.files = files
         updateBar()
     }
 
     // MARK: - file removal
 
+    // where index i lands once only the indices in `kept` stay: on its own file,
+    // or on the next one that stays when its file went
+    static func remap(_ i: Int, kept: [Int]) -> Int {
+        kept.firstIndex { $0 >= i } ?? kept.count - 1
+    }
+
     private func removeFiles(at removed: Set<Int>) {
         let kept = files.indices.filter { !removed.contains($0) }
         guard kept.count < files.count else { return }
-        if kept.isEmpty { quit() }
-        // keep each index on its file; one that pointed at a removed file moves to the next
-        let remap = { (i: Int) in kept.firstIndex { $0 >= i } ?? kept.count - 1 }
-        current = remap(current)
-        alternate = remap(alternate)
-        lastMarked = remap(lastMarked)
+        if kept.isEmpty {
+            files.removeAll() // -o must not print what was just removed
+            quit()
+        }
+        let currentRemoved = removed.contains(current)
+        current = Self.remap(current, kept: kept)
+        alternate = Self.remap(alternate, kept: kept)
+        lastMarked = Self.remap(lastMarked, kept: kept)
         files = kept.map { files[$0] }
-        grid.files = files
+        syncMarks()
         grid.select(current)
-        if !thumbnailMode { loadCurrent() }
-        updateBar()
+        if currentRemoved, !thumbnailMode { loadCurrent() }
     }
 
     // MARK: - external key-handler (like nsxiv's ~/.config/nsxiv/exec/key-handler)
@@ -583,7 +605,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // the handler may have edited, moved or deleted its files
         grid.invalidate(targets.map { files[$0] })
         let gone = targets.filter { !FileManager.default.fileExists(atPath: files[$0].path) }
-        if gone.isEmpty { reloadCurrent() } else { removeFiles(at: Set(gone)) }
+        let currentGone = gone.contains(current)
+        removeFiles(at: Set(gone))
+        if !currentGone { reloadCurrent() }
     }
 
     // MARK: - edit mode
@@ -652,7 +676,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         if gamma != 0 { right += "G\(gamma > 0 ? "+" : "")\(gamma) | " }
         if contrast != 0 { right += "C\(contrast > 0 ? "+" : "")\(contrast) | " }
-        let markCount = files.filter(\.marked).count
         if markCount > 0 { right += "*\(markCount) | " }
         if files[current].marked { right += "* | " }
 
@@ -851,7 +874,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func rotate(_ degrees: Int) {
-        rotation = (rotation + degrees) % 360
+        // under one flip a clockwise turn on screen is counterclockwise before the flip;
+        // two flips make a half turn and keep the direction
+        rotation = (rotation + (flipH == flipV ? degrees : 360 - degrees)) % 360
         redrawFrame()
         fitWindow()
     }
