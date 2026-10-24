@@ -13,6 +13,7 @@ magick -size 300x300 plasma: "$pics/2-plasma.jpg"
 XDG_RUNTIME_DIR=$(mktemp -d)
 export XDG_RUNTIME_DIR
 unset DISPLAY
+trap 'kill ${pid:-} ${niri:-} ${sway:-} 2>/dev/null || true' EXIT
 
 # the newest wayland-N socket in XDG_RUNTIME_DIR other than $1
 next_socket() {
@@ -57,14 +58,18 @@ done
 export NIRI_SOCKET
 
 shot() { sleep 1; WAYLAND_DISPLAY=$host grim "$shots/$1.png"; }
+# the column is as wide as the 640x400 gradient at 100%, the zoom it gets in a 617-high tile
+expect_width() {
+    niri msg windows
+    width=$(niri msg windows | awk '/Window size:/ { print $3 }')
+    [ "$width" = 640 ] || { echo "window is $width wide, expected 640" >&2; exit 1; }
+}
 
 WAYLAND_DISPLAY=$nested timeout 60 "$bin" "$pics" &
 pid=$!
 sleep 3
-shot 1-tiled
+shot 1-tiled && expect_width
 niri msg action fullscreen-window && shot 2-fullscreen
-niri msg action fullscreen-window && shot 3-tiled-again
-niri msg windows
+niri msg action fullscreen-window && shot 3-tiled-again && expect_width
 niri msg action close-window
 wait "$pid" # niri's close ends the viewer; a hang fails the timeout
-kill "$niri" "$sway"

@@ -236,9 +236,11 @@ final class WaylandUI: ViewerUI {
         var w = CGFloat(requested.width), h = CGFloat(requested.height)
         let barH = CGFloat(barHeight)
         if let image = viewer.fittedSize, image.width > 0, image.height > 0 {
-            // a given height with an open width, as in a niri column: hug the image
-            if w == 0, h > barH { w = min(maxSize.width, ((h - barH) * image.width / image.height).rounded()) }
-            if h == 0, w > 0 { h = min(maxSize.height, (w * image.height / image.width).rounded() + barH) }
+            // one side given and one open, as in a niri column: hug the image at the zoom it
+            // will get, which the default scale mode keeps at 100% or less
+            let upTo = { (zoom: CGFloat) in self.viewer.viewport.scaleMode == .down ? min(1, zoom) : zoom }
+            if w == 0, h > barH { w = min(maxSize.width, (image.width * upTo((h - barH) / image.height)).rounded()) }
+            if h == 0, w > 0 { h = min(maxSize.height, (image.height * upTo(w / image.width)).rounded() + barH) }
         }
         if w == 0 { w = wanted.width }
         if h == 0 { h = wanted.height }
