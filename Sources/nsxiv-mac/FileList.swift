@@ -36,15 +36,18 @@ enum FileList {
     }
 
     private static func scan(dir: URL, recursive: Bool) -> [FileEntry] {
+        let fm = FileManager.default
         var options: FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles]
         if !recursive { options.insert(.skipsSubdirectoryDescendants) }
-        let paths = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey],
-                                                   options: options)?.compactMap { item -> String? in
-            guard let url = item as? URL, isImagePath(url.path),
-                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
-            else { return nil }
-            return url.path
-        } ?? []
+        let paths = fm.enumerator(at: dir, includingPropertiesForKeys: nil, options: options)?
+            .compactMap { item -> String? in
+                // fileExists follows symlinks, so linked images count, as with nsxiv's stat()
+                var isDir: ObjCBool = false
+                guard let url = item as? URL, isImagePath(url.path),
+                      fm.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue
+                else { return nil }
+                return url.path
+            } ?? []
         return paths.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .map { FileEntry(path: $0) }
     }

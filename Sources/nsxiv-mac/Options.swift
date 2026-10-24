@@ -39,8 +39,9 @@ struct Options {
       -z ZOOM       set zoom level in percent
     """
 
-    static func parse(_ args: [String]) -> Options {
+    static func parse(_ arguments: [String]) -> Options {
         var o = Options()
+        var args = arguments
         var i = 0
 
         func value(_ flag: String) -> String {
@@ -98,6 +99,13 @@ struct Options {
                     i += 1
                 }
             default:
+                // getopt-style clusters: -rt is -r -t, -n5 is -n 5
+                if a.count > 2, a.hasPrefix("-"), !a.hasPrefix("--") {
+                    let flag = a.prefix(2), rest = a.dropFirst(2)
+                    let takesValue = "gnSsz".contains(flag.last!)
+                    args.replaceSubrange(i...i, with: [String(flag), takesValue ? String(rest) : "-\(rest)"])
+                    continue
+                }
                 if a.hasPrefix("-"), a.count > 1 {
                     warn("unknown option: \(a)")
                     FileHandle.standardError.write(Data((usage + "\n").utf8))

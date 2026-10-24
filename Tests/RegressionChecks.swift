@@ -19,13 +19,20 @@ struct RegressionChecks {
         try png.write(to: nested.appendingPathComponent("frame.png"))
         try png.write(to: directory.appendingPathComponent(".hidden.png"))
         try Data().write(to: directory.appendingPathComponent("notes.txt"))
+        try fm.createSymbolicLink(at: directory.appendingPathComponent("link.png"), withDestinationURL: imageURL)
+        try fm.createDirectory(at: directory.appendingPathComponent("album.png"), withIntermediateDirectories: false)
 
         let flat = FileList.build(paths: [directory.path], recursive: false, quiet: true)
         let recursive = FileList.build(paths: [directory.path], recursive: true, quiet: true)
-        assert(flat.map { $0.url.standardizedFileURL.path } == [imageURL.standardizedFileURL.path],
-               "nonrecursive paths: \(flat.map(\.path)); expected: \(imageURL.standardizedFileURL.path)")
-        assert(recursive.count == 2 && recursive.allSatisfy { $0.url.pathExtension == "png" },
-               "recursive scan must retain only visible images")
+        assert(flat.map(\.url.lastPathComponent) == ["frame.png", "link.png"],
+               "nonrecursive scan must keep visible images and symlinks to them: \(flat.map(\.path))")
+        assert(recursive.count == 3 && recursive.allSatisfy { $0.url.pathExtension == "png" },
+               "recursive scan must retain only visible images: \(recursive.map(\.path))")
+
+        let parsed = Options.parse(["-rtn5", "-sw", "a.png", "--", "-b.png"])
+        assert(parsed.recursive && parsed.thumbnailMode && parsed.startAt == 5
+               && parsed.scaleMode == ScaleMode.width && parsed.paths == ["a.png", "-b.png"],
+               "clustered short options must parse like getopt")
 
         let app = NSApplication.shared
         let geometries: [CGSize?] = [nil, CGSize(width: 640, height: 480)]
