@@ -142,6 +142,18 @@ final class Viewer {
         return (entry.url.lastPathComponent, right)
     }
 
+    // How far a window with edges at 0 and extent may grow inside the room lo...hi around it,
+    // where it cannot move itself. A window whose compositor keeps its top-left corner needs
+    // the room after it; one that keeps its center, half the growth on each side; where that is
+    // unknown, growth must suit both. A window already reaching outside the room, as a user may
+    // park it, grows freely on that axis.
+    static func grownLimit(_ extent: Int, room lo: CGFloat, _ hi: CGFloat, keepsTopLeft: Bool) -> Int {
+        guard lo <= 0, hi >= CGFloat(extent) else { return .max }
+        let after = hi - CGFloat(extent), before = -lo
+        let growth = keepsTopLeft ? after : min(after, 2 * before)
+        return extent + Int(growth.rounded(.down))
+    }
+
     // the status bar's right part in a bar too narrow for it: whole " | " fields drop from the
     // front, so the index, rightmost, stays longest
     static func fittedStatus(_ right: String, room: CGFloat, width: (String) -> CGFloat) -> String {

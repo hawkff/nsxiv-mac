@@ -46,7 +46,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends libx11-dev libimlib2-dev libfontconfig-dev \
             libwayland-dev libxkbcommon-dev pkg-config xvfb xauth xdotool imagemagick fonts-dejavu-core \
-            sway grim wtype jq weston mutter dbus-daemon
+            sway grim wtype jq weston mutter dbus-daemon labwc
       - name: Build
         run: swift build -c release --static-swift-stdlib
       - name: Smoke test
@@ -69,8 +69,14 @@ jobs:
         run: sh Tests/wayland-smoke.sh .build/release/nsxiv-mac wayland-shots
       - name: Run under Weston, which leaves decorations to the window
         run: sh Tests/weston-smoke.sh .build/release/nsxiv-mac weston-shots
+      - name: Run under labwc, where a growing window must stay on screen
+        run: |
+          sh Tests/stacking-smoke.sh .build/release/nsxiv-mac labwc stacking-shots 1
+          sh Tests/stacking-smoke.sh .build/release/nsxiv-mac labwc stacking-shots 2
       - name: Run under mutter, where a growing window must stay on screen
-        run: dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac
+        run: |
+          dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac 1
+          dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac 2
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -79,6 +85,7 @@ jobs:
             shots
             wayland-shots
             weston-shots
+            stacking-shots
       - name: Package
         run: tar -czf nsxiv-mac-linux.tar.gz -C .build/release nsxiv-mac
       - uses: actions/upload-artifact@v4
@@ -97,7 +104,9 @@ jobs:
       - name: Install Swift, X11, Wayland, Imlib2 and niri
         run: |
           pacman -Syu --noconfirm --needed base-devel libx11 imlib2 fontconfig wayland libxkbcommon \
-            libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim wtype imagemagick mesa kwin
+            libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim wtype imagemagick mesa kwin wayfire \
+            jq
+          useradd -m tester # Wayfire refuses to run as root
           # the toolchain the AUR's swift-bin repackages, with ncurses under its Arch name; the
           # hash is of the tarball the Swift 6.x release key signed
           tarball=swift-6.4.1-RELEASE-ubi10.tar.gz
@@ -116,9 +125,40 @@ jobs:
       - name: Run under niri
         run: sh Tests/niri-smoke.sh .build/release/nsxiv-mac niri-shots
       - name: Run under KWin, where a growing window must stay on screen
-        run: dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac
+        run: |
+          dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac 1
+          dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac 2
+      - name: Run under Wayfire, where a growing window must stay on screen
+        run: |
+          mkdir -p stacking-shots && chmod 777 stacking-shots
+          runuser -u tester -- sh Tests/stacking-smoke.sh .build/release/nsxiv-mac wayfire stacking-shots
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: niri-screenshots
-          path: niri-shots
+          path: |
+            niri-shots
+            stacking-shots
+
+  plasma5:
+    runs-on: ubuntu-24.04
+    container: swift:6.4-bookworm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Wayland, Imlib2 and KWin 5.27
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends libx11-dev libimlib2-dev libfontconfig-dev \
+            libwayland-dev libxkbcommon-dev pkg-config imagemagick fonts-dejavu-core kwin-wayland \
+            dbus-daemon dbus-bin
+          # a copy without the file capabilities a container cannot grant
+          install -m755 /usr/bin/kwin_wayland /usr/local/bin/kwin_wayland
+      - name: Build
+        run: swift build -c release --static-swift-stdlib
+      - name: Run under KWin 5.27, where a growing window must stay on screen
+        run: |
+          dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac 1
+          dbus-run-session -- sh Tests/kwin-smoke.sh .build/release/nsxiv-mac 2
