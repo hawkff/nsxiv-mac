@@ -13,8 +13,10 @@ the library nsxiv uses.
   resizing keeps the aspect ratio. On macOS the image fills the window and the title
   bar fades in at the top edge. On Wayland a tiling compositor sets the size, and
   resizing does not keep the aspect ratio. A floating window that grows stays on
-  screen on GNOME, KDE, and sway; on sway it also keeps its center. `-g WxH` fixes
-  the size instead
+  screen; on sway it also keeps its center. Where the compositor cannot move it,
+  as on labwc, Wayfire, and Hyprland, it grows only as far as the screen leaves
+  room. With several monitors, GNOME may spread it onto the next one. `-g WxH`
+  fixes the size instead
 - Thumbnail grid. On macOS QuickLook renders and caches the thumbnails and `-p`
   bypasses that cache; on Linux they stay in memory for the session
 - Plays animated GIF, APNG, and WebP; steps through single frames
