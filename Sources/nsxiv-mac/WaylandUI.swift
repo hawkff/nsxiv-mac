@@ -256,6 +256,13 @@ final class WaylandUI: ViewerUI {
         XDG_TOPLEVEL_STATE_TILED_TOP, XDG_TOPLEVEL_STATE_TILED_BOTTOM,
     ].map(\.rawValue))
 
+    // Hyprland and COSMIC report floating windows as tiled too, and Hyprland as maximized, so
+    // that clients drop their shadows; a tiled one there gets a size the viewer did not pick
+    private var bindingStates: Set<UInt32> {
+        desktops.isDisjoint(with: ["hyprland", "cosmic"]) ? Self.heldStates
+            : [XDG_TOPLEVEL_STATE_FULLSCREEN.rawValue, XDG_TOPLEVEL_STATE_RESIZING.rawValue]
+    }
+
     private func configure(_ serial: UInt32) {
         let wasFullscreen = fullscreen, oldChrome = chrome
         states = Set(pendingStates)
@@ -264,7 +271,7 @@ final class WaylandUI: ViewerUI {
         if states.contains(XDG_TOPLEVEL_STATE_RESIZING.rawValue), asked.width > 0, asked.height > 0 {
             wanted = asked // a dragged size lasts until the next image, as on X11
             remember(asked)
-        } else if states.isDisjoint(with: Self.heldStates), picked.contains(asked) {
+        } else if states.isDisjoint(with: bindingStates), picked.contains(asked) {
             // sway answers a floating window's own resize with a configure of that size, late
             // when keys come fast; such an answer leaves the size to the viewer.
             // shortcut: a compositor resize to one of the last eight picked sizes reads as an
