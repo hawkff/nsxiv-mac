@@ -38,6 +38,7 @@ function watch(w) {
     w.frameGeometry = { x: area.x + area.width - f.width - 10, y: area.y + area.height - f.height - 10,
                         width: f.width, height: f.height };
 }
+console.info("nsxiv-test observer running");
 workspace.windowList().forEach(watch);
 workspace.windowAdded.connect(watch);
 EOF
@@ -54,6 +55,7 @@ kwin /Scripting org.kde.kwin.Scripting.isScriptLoaded string:"nsxiv-mac-$pid" | 
 area=$(sed -n 's/.*nsxiv-test area //p' "$log" | tail -1)
 frame=$(sed -n 's/.*nsxiv-test frame //p' "$log" | tail -1)
 echo "work area: ${area:-none}; window: ${frame:-none}"
+[ -n "$area" ] && [ -n "$frame" ] || { echo "the observer logged no window" >&2; tail -60 "$log" >&2; exit 1; }
 # shellcheck disable=SC2086
 set -- $area $frame
 [ "$7" -ge 1000 ] || { echo "the window did not grow for the large image" >&2; exit 1; }
