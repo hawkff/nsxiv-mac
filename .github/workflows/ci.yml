@@ -95,6 +95,8 @@ jobs:
             | tar -xz -C /opt
           ln -sf /usr/lib/libncursesw.so.6 /usr/lib/libncurses.so.6
           echo /opt/swift-6.4.1-RELEASE-ubi10/usr/bin >> "$GITHUB_PATH"
+          # copies without the file capabilities a container cannot grant
+          for compositor in sway niri; do install -m755 "/usr/bin/$compositor" "/usr/local/bin/$compositor"; done
       - name: Build
         run: swift build -c release
       - name: Smoke test
