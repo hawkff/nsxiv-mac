@@ -40,6 +40,7 @@ final class X11UI: ViewerUI {
     private var failedThumbs: Set<String> = []
     private var thumbnailPending = false
 
+    private var keysDown: Set<UInt32> = [] // keycodes pressed and not released
     private var pointer = CGPoint.zero
     private var dragging = false
     private var dragged = false
@@ -74,8 +75,8 @@ final class X11UI: ViewerUI {
         attrs.colormap = colormap
         attrs.border_pixel = 0
         attrs.background_pixel = background.pixel
-        attrs.event_mask = KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask
-            | StructureNotifyMask | ExposureMask | PropertyChangeMask
+        attrs.event_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask
+            | PointerMotionMask | StructureNotifyMask | ExposureMask | PropertyChangeMask | FocusChangeMask
         let win = XCreateWindow(dpy, XRootWindow(dpy, screen), 0, 0, UInt32(size.width), UInt32(size.height), 0,
                                 depth, UInt32(InputOutput), visual,
                                 UInt(CWColormap | CWBorderPixel | CWBackPixel | CWEventMask), &attrs)
@@ -94,6 +95,9 @@ final class X11UI: ViewerUI {
         XSetWMProtocols(dpy, win, &protocols, 1)
         var hint = XClassHint(res_name: strdup(Config.appName), res_class: strdup(Config.appName))
         XSetClassHint(dpy, win, &hint)
+        // auto-repeat sends presses alone, so a release marks the end of a held key
+        var detectable: Int32 = 0
+        XkbSetDetectableAutoRepeat(dpy, 1, &detectable)
 
         let font: UnsafeMutablePointer<XftFont>? = XftFontOpenName(dpy, screen, Config.barFont)
         if font == nil { warn("cannot load font \(Config.barFont)") }
@@ -138,7 +142,18 @@ final class X11UI: ViewerUI {
         while XPending(dpy) > 0 {
             XNextEvent(dpy, &ev)
             switch ev.type {
-            case KeyPress: keyPressed(&ev.xkey)
+            case KeyPress:
+                // with detectable auto-repeat, a press of a key already down is a repeat; a held key
+                // outruns large decodes, so a repeat with another one queued behind it is skipped
+                let repeated = !keysDown.insert(ev.xkey.keycode).inserted
+                if repeated, XEventsQueued(dpy, QueuedAfterReading) > 0 {
+                    var next = XEvent()
+                    XPeekEvent(dpy, &next)
+                    if next.type == KeyPress, next.xkey.keycode == ev.xkey.keycode { continue }
+                }
+                keyPressed(&ev.xkey)
+            case KeyRelease: keysDown.remove(ev.xkey.keycode)
+            case FocusOut: keysDown.removeAll() // releases go to the window that has focus
             case ButtonPress: buttonPressed(ev.xbutton)
             case ButtonRelease: buttonReleased(ev.xbutton)
             case MotionNotify:
