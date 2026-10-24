@@ -1,29 +1,43 @@
 # nsxiv-mac
 
-A native macOS rewrite of [nsxiv](https://github.com/nsxiv/nsxiv)'s
-keyboard-driven image viewing. Swift on AppKit, ImageIO, and Vision. No
-third-party dependencies. Requires macOS 13 or later.
+A Swift rewrite of [nsxiv](https://github.com/nsxiv/nsxiv)'s keyboard-driven
+image viewing. On macOS it runs on AppKit, ImageIO, and Vision with no
+third-party dependencies and needs macOS 13 or later. On Linux it draws with
+Xlib, Imlib2, and Xft, the libraries nsxiv uses.
 
 ## Features
 
 - Image mode: zoom, pan, rotate, flip, gamma and contrast correction
 - Window in the style of mpv: it takes each image's size, capped to the screen, and
-  resizing keeps the aspect ratio; the image fills it and the title bar fades in at
-  the top edge. `-g WxH` fixes the size instead
-- Thumbnail grid; QuickLook renders and caches the thumbnails, `-p` bypasses that cache
+  resizing keeps the aspect ratio. On macOS the image fills the window and the title
+  bar fades in at the top edge. `-g WxH` fixes the size instead
+- Thumbnail grid. On macOS QuickLook renders and caches the thumbnails and `-p`
+  bypasses that cache; on Linux they stay in memory for the session
 - Plays animated GIF, APNG, and WebP; steps through single frames
 - Reloads the image when the file changes on disk
 - Marks for batch workflows; `-o` prints marked files on exit
-- Edit mode: annotate, censor, OCR (press `x`)
+- Edit mode on macOS: annotate, censor, OCR (press `x`)
 - Shell scripting through a `key-handler`, same protocol as nsxiv
 - Slideshow
 - nsxiv keybindings and CLI flags
-- Opens JPEG, PNG, GIF, WebP, HEIC, AVIF, TIFF, and camera RAW via ImageIO
+- Opens JPEG, PNG, GIF, WebP, HEIC, AVIF, TIFF, and camera RAW through ImageIO on
+  macOS; on Linux, the installed Imlib2 loaders decide the formats
 
 ## Build
 
+On macOS:
+
 ```sh
 swift build -c release
+```
+
+On Linux, install a [Swift toolchain](https://www.swift.org/install/linux/) and
+the X11, Xft, and Imlib2 headers, then build:
+
+```sh
+sudo apt install libx11-dev libxft-dev libimlib2-dev pkg-config   # Debian, Ubuntu
+sudo pacman -S libx11 libxft imlib2 pkgconf                       # Arch, Artix
+swift build -c release --static-swift-stdlib
 ```
 
 The binary lands in `.build/release/nsxiv-mac`. Copy it into your `$PATH`.
@@ -77,13 +91,13 @@ nsxiv defaults, adjusted where noted:
 | `C-x KEY` | pass KEY and the file list to your key-handler |
 
 Mouse: click near the left or right edge to navigate, drag to pan, right-click
-to switch modes. The scroll wheel zooms; a trackpad pans and pinch-zooms. Move
-the mouse to the top edge to show the title bar; drag it to move the window,
-double-click it to zoom.
+to switch modes. The scroll wheel zooms. On macOS a trackpad pans and
+pinch-zooms, and moving the mouse to the top edge shows the title bar; drag it to
+move the window, double-click it to zoom.
 
 ## Edit mode
 
-Press `x` on an image to annotate it. The tool set follows
+Edit mode needs macOS. Press `x` on an image to annotate it. The tool set follows
 [macshot](https://github.com/sw33tLie/macshot). The status bar names the
 active tool. Annotations stay editable until you leave: `w` writes
 `name-edit.png` next to the original and opens it, `q` discards. nsxiv-mac
@@ -123,7 +137,8 @@ never modifies the source file.
 Place an executable at `~/.config/nsxiv-mac/exec/key-handler`. After you press
 `C-x` in the viewer, the next key arrives as `$1` and the marked files (or the
 current file) arrive on stdin, one path per line. `etc/key-handler.example`
-ships clipboard, trash, and reveal-in-Finder actions.
+ships clipboard, trash, and reveal actions; on Linux they use xclip, gio, and
+xdg-open.
 
 ## File manager integration
 
@@ -146,7 +161,8 @@ prepend_rules = [
 
 Compile-time constants live in `Sources/nsxiv-mac/Config.swift`, the
 `config.h` of this project: zoom levels, thumbnail sizes, slideshow delay,
-window size, image extensions. Edit and rebuild.
+window size, image extensions, and on Linux the colors and the status bar font.
+Edit and rebuild.
 
 ## License
 
