@@ -732,8 +732,11 @@ final class WaylandUI: ViewerUI {
         guard let tree = swaymsg("-t", "get_tree") as? [String: Any],
               let found = swayFind(pid: pid, in: tree, workspace: nil),
               found.node["type"] as? String == "floating_con", let id = found.node["id"] as? Int,
-              let frame = swayRect(found.node["rect"]), let content = swayRect(found.node["window_rect"])
+              let below = swayRect(found.node["rect"]), let content = swayRect(found.node["window_rect"])
         else { return nil }
+        // like i3, sway's rect leaves out the title bar, which deco_rect describes
+        let title = swayRect(found.node["deco_rect"])?.height ?? 0
+        let frame = CGRect(x: below.minX, y: below.minY - title, width: below.width, height: below.height + title)
         let space = found.workspace
         // sway's title bar and borders; the top-left corner is still where it was before the resize
         let deco = CGSize(width: frame.width - content.width, height: frame.height - content.height)

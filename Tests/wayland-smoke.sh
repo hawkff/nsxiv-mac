@@ -51,13 +51,14 @@ expect_width() {
     width=$(swaymsg -t get_tree | jq '.. | objects | select(.app_id == "nsxiv-mac") | .window_rect.width')
     [ "$width" = "$1" ] || { echo "window is $width wide, expected $1" >&2; exit 1; }
 }
-# the whole window, sway's title bar included, stays inside the workspace
+# the whole window stays inside the workspace, sway's title bar included: like i3, sway
+# reports that bar as deco_rect, above rect
 expect_inside() {
     swaymsg -t get_tree | jq -e '[.. | objects | select(.type == "workspace" and .name == "1") | .rect] as [$w]
-        | .. | objects | select(.app_id == "nsxiv-mac") | .rect
-        | .x >= $w.x and .y >= $w.y and .x + .width <= $w.x + $w.width and .y + .height <= $w.y + $w.height' \
+        | .. | objects | select(.app_id == "nsxiv-mac") | .deco_rect.height as $t | .rect
+        | .x >= $w.x and .y - $t >= $w.y and .x + .width <= $w.x + $w.width and .y + .height <= $w.y + $w.height' \
         >/dev/null || { echo "window left the workspace: $(swaymsg -t get_tree | jq -c '.. | objects |
-            select(.app_id == "nsxiv-mac" or .type == "workspace") | .rect')" >&2; exit 1; }
+            select(.app_id == "nsxiv-mac" or .type == "workspace") | [.rect, .deco_rect]')" >&2; exit 1; }
 }
 # each wtype plugs in a new virtual keyboard; the pause lets the client bind it first
 key() { wtype -s 300 "$@"; }
