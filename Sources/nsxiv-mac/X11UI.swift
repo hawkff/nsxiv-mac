@@ -74,8 +74,8 @@ final class X11UI: ViewerUI {
         attrs.colormap = colormap
         attrs.border_pixel = 0
         attrs.background_pixel = background.pixel
-        attrs.event_mask = KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask
-            | StructureNotifyMask | ExposureMask | PropertyChangeMask
+        attrs.event_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask
+            | PointerMotionMask | StructureNotifyMask | ExposureMask | PropertyChangeMask | FocusChangeMask
         let win = XCreateWindow(dpy, XRootWindow(dpy, screen), 0, 0, UInt32(size.width), UInt32(size.height), 0,
                                 depth, UInt32(InputOutput), visual,
                                 UInt(CWColormap | CWBorderPixel | CWBackPixel | CWEventMask), &attrs)
@@ -94,6 +94,11 @@ final class X11UI: ViewerUI {
         XSetWMProtocols(dpy, win, &protocols, 1)
         var hint = XClassHint(res_name: strdup(Config.appName), res_class: strdup(Config.appName))
         XSetClassHint(dpy, win, &hint)
+        // auto-repeat then sends presses alone, and the release comes when the key does
+        // shortcut: a server without it sends a release before each repeat, so dropRepeats
+        // keeps them all; X.org, Xvfb and XWayland have it
+        var detectable: Int32 = 0
+        XkbSetDetectableAutoRepeat(dpy, 1, &detectable)
 
         let font: UnsafeMutablePointer<XftFont>? = XftFontOpenName(dpy, screen, Config.barFont)
         if font == nil { warn("cannot load font \(Config.barFont)") }
@@ -109,6 +114,11 @@ final class X11UI: ViewerUI {
             warn("cannot allocate color \(Config.foreground)")
         }
         viewer.ui = self
+    }
+
+    private struct RepeatScan {
+        let keycode: UInt32
+        var ended = false
     }
 
     private static func color(_ name: String, _ dpy: OpaquePointer, _ colormap: Colormap) -> XColor {
@@ -138,7 +148,9 @@ final class X11UI: ViewerUI {
         while XPending(dpy) > 0 {
             XNextEvent(dpy, &ev)
             switch ev.type {
-            case KeyPress: keyPressed(&ev.xkey)
+            case KeyPress:
+                keyPressed(&ev.xkey)
+                dropRepeats(of: ev.xkey.keycode)
             case ButtonPress: buttonPressed(ev.xbutton)
             case ButtonRelease: buttonReleased(ev.xbutton)
             case MotionNotify:
@@ -165,6 +177,27 @@ final class X11UI: ViewerUI {
         XLookupString(&key, &text, Int32(text.count), &sym, nil)
         guard let name = Self.keyName(sym) else { return }
         _ = viewer.handle(Keystroke(key: name, ctrl: key.state & UInt32(ControlMask) != 0))
+    }
+
+    // A held key outruns large decodes. The presses of that key queued while the last one
+    // was handled go, past other events but not past the key's release or a focus change
+    // (which may take the release elsewhere), so taps still count.
+    private func dropRepeats(of keycode: UInt32) {
+        var scan = RepeatScan(keycode: keycode)
+        var dropped = XEvent()
+        while withUnsafeMutablePointer(to: &scan, { scan in
+            XCheckIfEvent(dpy, &dropped, { _, event, arg in
+                guard let e = event?.pointee, let arg else { return 0 }
+                let scan = UnsafeMutableRawPointer(arg).assumingMemoryBound(to: RepeatScan.self)
+                switch e.type {
+                case FocusIn, FocusOut: scan.pointee.ended = true
+                case KeyRelease where e.xkey.keycode == scan.pointee.keycode: scan.pointee.ended = true
+                case KeyPress where e.xkey.keycode == scan.pointee.keycode && !scan.pointee.ended: return 1
+                default: break
+                }
+                return 0
+            }, UnsafeMutableRawPointer(scan).assumingMemoryBound(to: CChar.self))
+        }) != 0 {}
     }
 
     // printable ASCII as typed, other keys by their keysym name; a modifier alone is no key

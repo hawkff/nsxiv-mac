@@ -294,6 +294,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, Vi
         }
         // cmd shortcuts pass through to the menu (cmd-q etc.)
         guard !event.modifierFlags.contains(.command), let key = Self.keyName(event) else { return false }
+        // a held key outruns large decodes; a repeat that waited in the queue is dropped
+        if event.isARepeat, ProcessInfo.processInfo.systemUptime - event.timestamp > 0.1 { return true }
         return viewer.handle(Keystroke(key: key, ctrl: event.modifierFlags.contains(.control)))
     }
 
