@@ -386,6 +386,7 @@ final class ImlibRenderer {
     }
 
     private func renderBar(_ canvas: Imlib_Image, y: Int, width: Int, height: Int, scale: Double) {
+        imlib_context_set_image(canvas) // renderImage may return with the image still selected
         fill(barBackground, 0, y, width, height)
         guard let face = loadFont(scale: scale) else { return }
         imlib_context_set_font(face)
