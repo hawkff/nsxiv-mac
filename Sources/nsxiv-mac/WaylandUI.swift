@@ -174,15 +174,26 @@ final class WaylandUI: ViewerUI {
         scaleChanged()
     }
 
+    // keyboards and mice come and go; a removed one's objects never send events again
     private func seatCapabilities(_ capabilities: UInt32) {
         let data = Unmanaged.passUnretained(self).toOpaque()
-        if capabilities & WL_SEAT_CAPABILITY_KEYBOARD.rawValue != 0, keyboard == nil {
+        let hasKeyboard = capabilities & WL_SEAT_CAPABILITY_KEYBOARD.rawValue != 0
+        if hasKeyboard, keyboard == nil {
             keyboard = wl_seat_get_keyboard(seat)
             wl_keyboard_add_listener(keyboard, Self.keyboardListener, data)
+        } else if !hasKeyboard, let keyboard {
+            stopRepeat()
+            if seatVersion >= 3 { wl_keyboard_release(keyboard) } else { wl_keyboard_destroy(keyboard) }
+            self.keyboard = nil
         }
-        if capabilities & WL_SEAT_CAPABILITY_POINTER.rawValue != 0, pointer == nil {
+        let hasPointer = capabilities & WL_SEAT_CAPABILITY_POINTER.rawValue != 0
+        if hasPointer, pointer == nil {
             pointer = wl_seat_get_pointer(seat)
             wl_pointer_add_listener(pointer, Self.pointerListener, data)
+        } else if !hasPointer, let pointer {
+            dragging = false
+            if seatVersion >= 3 { wl_pointer_release(pointer) } else { wl_pointer_destroy(pointer) }
+            self.pointer = nil
         }
     }
 
@@ -198,11 +209,14 @@ final class WaylandUI: ViewerUI {
         return Double(enteredOutputs.compactMap { outputs[$0]?.scale }.max() ?? 1)
     }
 
-    // where the window may grow: the compositor's bounds, else the largest output
+    // where the window may grow: the compositor's bounds, else the largest output, divided
+    // by the fractional scale once it came (wl_output rounds 1.5 up to 2)
     private var maxSize: CGSize {
         if let bounds { return CGSize(width: Int(bounds.width), height: Int(bounds.height)) }
-        let sizes = outputs.values.map {
-            CGSize(width: Int($0.mode.width / max(1, $0.scale)), height: Int($0.mode.height / max(1, $0.scale)))
+        let fractional = viewport != nil && scale120 != 120 ? Double(scale120) / 120 : nil
+        let sizes = outputs.values.map { output -> CGSize in
+            let s = fractional ?? Double(max(1, output.scale))
+            return CGSize(width: Double(output.mode.width) / s, height: Double(output.mode.height) / s)
         }
         return sizes.max { $0.width * $0.height < $1.width * $1.height } ?? CGSize(width: 1920, height: 1080)
     }
@@ -342,6 +356,7 @@ final class WaylandUI: ViewerUI {
 
     private func scaleChanged() {
         loadCursor()
+        fitWindow() // the screen's logical size may have changed with the scale
         setNeedsRedraw()
     }
 

@@ -33,20 +33,23 @@ export WAYLAND_DISPLAY
 unset DISPLAY # a Wayland window, not an X one through XWayland
 
 shot() { sleep 1; grim "$shots/$1.png"; }
+# each wtype plugs in a new virtual keyboard; the pause lets the client bind it first
+key() { wtype -s 300 "$@"; }
 
 timeout 60 "$bin" -o "$pics" >"$pics/marked" & # a viewer that misses q fails the run
 pid=$!
 sleep 2
 shot 1-image
-wtype '>' && shot 2-turned
-wtype j && shot 3-alpha
-wtype A && shot 4-checkerboard
-wtype j && shot 5-animated
-wtype f && shot 6-fullscreen
-wtype f g m m && wtype -k Return
+key '>' && shot 2-turned
+key j && shot 3-alpha
+key A && shot 4-checkerboard
+key j && shot 5-animated
+key f && shot 6-fullscreen
+key f && sleep 1
+key g m m -k Return
 sleep 2
 shot 7-grid
-wtype q
+key q
 wait "$pid"
 kill "$sway"
 test "$(wc -l <"$pics/marked")" -eq 2
