@@ -30,5 +30,10 @@ pid=$!
 sleep 3
 (cd "$shots" && XDG_PICTURES_DIR=$shots weston-screenshooter)
 for shot in "$shots"/wayland-screenshot*.png; do mv "$shot" "$shots/1-title-bar.png"; done
-test -f "$shots/1-title-bar.png"
 kill -0 "$pid" # a protocol error would have ended the viewer
+# Weston places windows at random, so count the bar color: a 1280-pixel-wide window with a
+# title bar and a status bar shows two bars of it, about 150000 pixels, and one bar half that
+bar=$(magick "$shots/1-title-bar.png" -fill black +opaque '#eeeeee' -fill white -opaque '#eeeeee' \
+    -format '%[fx:int(mean*w*h)]' info:)
+echo "bar-colored pixels: $bar"
+[ "$bar" -gt 110000 ] || { echo "no title bar above the status bar" >&2; exit 1; }

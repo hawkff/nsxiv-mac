@@ -410,6 +410,8 @@ final class WaylandUI: ViewerUI {
         cursorShown = false
         setCursor(cursorName)
         fitWindow() // the screen's logical size may have changed with the scale
+        // on another output, sway's workspace may leave another room
+        if size.width > 0 { swayResized(from: CGSize(width: size.width, height: size.height)) }
         setNeedsRedraw()
     }
 

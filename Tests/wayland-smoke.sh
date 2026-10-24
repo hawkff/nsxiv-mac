@@ -37,11 +37,13 @@ for _ in $(seq 100); do
 done
 WAYLAND_DISPLAY=$(basename "$socket")
 export WAYLAND_DISPLAY
+unset SWAYSOCK # a sway session running the test has its own
 for _ in $(seq 100); do
     for candidate in "$XDG_RUNTIME_DIR"/sway-ipc.*.sock; do [ -S "$candidate" ] && SWAYSOCK=$candidate; done
     [ -n "${SWAYSOCK:-}" ] && break
     sleep 0.1
 done
+[ -n "${SWAYSOCK:-}" ] || { echo "sway opened no IPC socket" >&2; exit 1; }
 export SWAYSOCK # the viewer places its floating window through sway's IPC
 unset DISPLAY # a Wayland window, not an X one through XWayland
 
