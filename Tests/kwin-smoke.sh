@@ -24,6 +24,8 @@ for _ in $(seq 150); do
     [ -S "$XDG_RUNTIME_DIR/wayland-k" ] && break
     sleep 0.1
 done
+[ -S "$XDG_RUNTIME_DIR/wayland-k" ] || { echo "KWin did not start" >&2; cat "$log" >&2; exit 1; }
+sleep 1 # its D-Bus interfaces come up after the socket
 
 kwin() { dbus-send --session --print-reply --dest=org.kde.KWin "$@"; }
 cat >"$observer" <<'EOF'
