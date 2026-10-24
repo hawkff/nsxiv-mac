@@ -6,6 +6,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: macos-15
@@ -38,11 +41,12 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      - name: Install X11, Xft and Imlib2
+      - name: Install X11, Wayland and Imlib2
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends libx11-dev libxft-dev libimlib2-dev pkg-config \
-            xvfb xauth xdotool imagemagick fonts-dejavu-core
+          apt-get install -y --no-install-recommends libx11-dev libimlib2-dev libfontconfig-dev \
+            libwayland-dev libxkbcommon-dev pkg-config xvfb xauth xdotool imagemagick fonts-dejavu-core \
+            sway grim wtype jq
       - name: Build
         run: swift build -c release --static-swift-stdlib
       - name: Smoke test
@@ -51,23 +55,63 @@ jobs:
         run: |
           sources=()
           for source in Sources/nsxiv-mac/*.swift; do
-            if [[ "$source" != */main.swift ]]; then sources+=("$source"); fi
+            # the Wayland frontend needs the CWayland C target, which only SwiftPM builds
+            if [[ "$source" != */main.swift && "$source" != */WaylandUI.swift ]]; then sources+=("$source"); fi
           done
           flags=()
-          for flag in $(pkg-config --cflags x11 xft imlib2); do flags+=(-Xcc "$flag"); done
+          for flag in $(pkg-config --cflags x11 imlib2 fontconfig); do flags+=(-Xcc "$flag"); done
           swiftc -parse-as-library -I Sources/CX11 "${flags[@]}" "${sources[@]}" Tests/RegressionChecks.swift \
             -o "$RUNNER_TEMP/nsxiv-regressions"
           "$RUNNER_TEMP/nsxiv-regressions"
       - name: Run under X
         run: xvfb-run -a -s "-screen 0 1280x800x24" sh Tests/x11-smoke.sh .build/release/nsxiv-mac shots
+      - name: Run under Wayland
+        run: sh Tests/wayland-smoke.sh .build/release/nsxiv-mac wayland-shots
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: x11-screenshots
-          path: shots
+          name: screenshots
+          path: |
+            shots
+            wayland-shots
       - name: Package
         run: tar -czf nsxiv-mac-linux.tar.gz -C .build/release nsxiv-mac
       - uses: actions/upload-artifact@v4
         with:
           name: nsxiv-mac-linux
           path: nsxiv-mac-linux.tar.gz
+
+  arch:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Swift, X11, Wayland, Imlib2 and niri
+        run: |
+          pacman -Syu --noconfirm --needed base-devel libx11 imlib2 fontconfig wayland libxkbcommon \
+            libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim wtype imagemagick mesa
+          # the toolchain the AUR's swift-bin repackages, with ncurses under its Arch name; the
+          # hash is of the tarball the Swift 6.x release key signed
+          tarball=swift-6.4.1-RELEASE-ubi10.tar.gz
+          curl -fsSLo "/tmp/$tarball" "https://download.swift.org/swift-6.4.1-release/ubi10/swift-6.4.1-RELEASE/$tarball"
+          echo "180ca7843cd092f2bcce230ab59c3b025159a41e81696e6543f349405f34d321  /tmp/$tarball" | sha256sum -c -
+          tar -xzf "/tmp/$tarball" -C /opt
+          rm "/tmp/$tarball"
+          ln -sf /usr/lib/libncursesw.so.6 /usr/lib/libncurses.so.6
+          echo /opt/swift-6.4.1-RELEASE-ubi10/usr/bin >> "$GITHUB_PATH"
+          # copies without the file capabilities a container cannot grant
+          for compositor in sway niri; do install -m755 "/usr/bin/$compositor" "/usr/local/bin/$compositor"; done
+      - name: Build
+        run: swift build -c release
+      - name: Smoke test
+        run: .build/release/nsxiv-mac -v
+      - name: Run under niri
+        run: sh Tests/niri-smoke.sh .build/release/nsxiv-mac niri-shots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: niri-screenshots
+          path: niri-shots

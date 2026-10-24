@@ -34,5 +34,8 @@ let controller = AppController(options: options, files: files)
 app.delegate = controller
 app.run()
 #else
-X11UI(viewer: Viewer(options: options, files: files)).run()
+// a Wayland session gets a Wayland window; X11, or XWayland with WAYLAND_DISPLAY unset, an X one
+let viewer = Viewer(options: options, files: files)
+if let wayland = WaylandUI(viewer: viewer) { wayland.run() }
+X11UI(viewer: viewer).run()
 #endif
