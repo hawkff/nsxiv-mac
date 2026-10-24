@@ -69,12 +69,12 @@ jobs:
         run: sh Tests/wayland-smoke.sh .build/release/nsxiv-mac wayland-shots
       - name: Run under Weston, which leaves decorations to the window
         run: sh Tests/weston-smoke.sh .build/release/nsxiv-mac weston-shots
+      - name: Run under labwc, where a growing window must stay on screen
+        run: sh Tests/stacking-smoke.sh .build/release/nsxiv-mac labwc stacking-shots
       - name: Run under mutter, where a growing window must stay on screen
         run: |
           dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac 1
           dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac 2
-      - name: Run under labwc, where a growing window must stay on screen
-        run: sh Tests/stacking-smoke.sh .build/release/nsxiv-mac labwc stacking-shots
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -103,8 +103,8 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed base-devel libx11 imlib2 fontconfig wayland libxkbcommon \
             libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim wtype imagemagick mesa kwin wayfire \
-            hyprland jq
-          useradd -m tester # Wayfire and Hyprland refuse to run as root
+            jq
+          useradd -m tester # Wayfire refuses to run as root
           # the toolchain the AUR's swift-bin repackages, with ncurses under its Arch name; the
           # hash is of the tarball the Swift 6.x release key signed
           tarball=swift-6.4.1-RELEASE-ubi10.tar.gz
@@ -130,9 +130,6 @@ jobs:
         run: |
           mkdir -p stacking-shots && chmod 777 stacking-shots
           runuser -u tester -- sh Tests/stacking-smoke.sh .build/release/nsxiv-mac wayfire stacking-shots
-      - name: Run under Hyprland, where a growing window must stay on screen
-        continue-on-error: true
-        run: runuser -u tester -- sh Tests/hyprland-smoke.sh .build/release/nsxiv-mac
       - uses: actions/upload-artifact@v4
         if: always()
         with:

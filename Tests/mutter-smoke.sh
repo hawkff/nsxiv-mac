@@ -35,13 +35,12 @@ pid=$!
 sleep 6 # the large image shows from 4 to 8 seconds
 kill -0 "$pid"
 
-# mutter names each window it constrains; the viewer's own comes first, its room probes later.
-# For that window: where it asked to go, and where each constraint left it
+# mutter names each window it constrains, as W1 (title); the viewer's own comes first, its room
+# probes later. For that window: where it asked to go, and where each constraint left it
 viewer() {
     awk -v kind="$1" '
         / Constraining / {
-            s = substr($0, index($0, "Constraining ") + 13)
-            desc = substr(s, 1, index(s, " in move") - 1)
+            for (i = 1; i < NF; i++) if ($i == "Constraining") desc = $(i + 1)
             if (first == "") first = desc
             if (kind == "asked" && desc == first) { split($(NF - 1), p, ","); split($NF, z, "x"); print p[1], p[2], z[1], z[2] }
         }
