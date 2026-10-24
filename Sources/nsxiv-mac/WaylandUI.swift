@@ -262,6 +262,7 @@ final class WaylandUI: ViewerUI {
         if wasFullscreen, !fullscreen { fitWindow() }
         applySize()
         if chrome != oldChrome { layoutChanged() } // the title bar goes with fullscreen
+        setCursor(cursor(at: pointerAt)) // no resize arrow once the window is fullscreen or tiled
         if swayRoom == nil { swayResized(from: CGSize(width: size.width, height: size.height)) }
         render() // every configure wants a commit, even one that changes nothing
     }
@@ -913,7 +914,11 @@ final class WaylandUI: ViewerUI {
         l.enter = { data, _, serial, _, x, y in
             WaylandUI.ui(data).pointerEntered(serial, at: CGPoint(x: wl_fixed_to_double(x), y: wl_fixed_to_double(y)))
         }
-        l.leave = { data, _, _, _ in WaylandUI.ui(data).dragging = false }
+        l.leave = { data, _, _, _ in
+            let ui = WaylandUI.ui(data)
+            ui.dragging = false
+            ui.pointerSerial = 0 // the cursor is the compositor's until the next enter
+        }
         l.motion = { data, _, _, x, y in
             WaylandUI.ui(data).pointerMoved(to: CGPoint(x: wl_fixed_to_double(x), y: wl_fixed_to_double(y)))
         }
