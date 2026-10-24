@@ -1,9 +1,9 @@
 #!/bin/sh
 # Runs the Linux build in a headless KWin, KDE's compositor. A test-only KWin script parks
 # the small first window near the bottom-right corner and logs its frame. The slideshow's
-# second image needs most of the screen, so a window that kept its top-left corner would run
-# past the edge; the viewer's own KWin script must move it back inside, then unload itself
-# when the viewer quits. Run under dbus-run-session.
+# second image needs most of the screen, and KWin lets the grown window run past the edge;
+# the viewer's own KWin script must move it back inside, then unload itself when the viewer
+# quits. Run under dbus-run-session.
 set -eu
 bin=$1
 pics=$(mktemp -d)

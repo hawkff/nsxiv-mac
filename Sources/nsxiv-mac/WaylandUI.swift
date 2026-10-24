@@ -799,11 +799,10 @@ final class WaylandUI: ViewerUI {
 
     // MARK: - KWin
 
-    // KWin keeps a window's top-left corner when the window resizes itself and lets it grow
-    // past the work area. On KDE a KWin script, loaded once over D-Bus, watches this process's
-    // window from inside KWin and moves it back in when a resize pushes it past an edge, as
-    // mutter does on GNOME. Nothing goes over D-Bus per image, and the script unloads itself
-    // when the window goes.
+    // KWin lets a window that resizes itself grow past the work area. On KDE a KWin script,
+    // loaded once over D-Bus, watches this process's window from inside KWin and moves it back
+    // in when a resize pushes it past an edge, as mutter does on GNOME. Nothing goes over D-Bus
+    // per image, and the script unloads itself when the window goes.
     private static func loadKWinHelper() {
         let env = ProcessInfo.processInfo.environment
         guard env["XDG_CURRENT_DESKTOP"]?.split(separator: ":").contains("KDE") == true,

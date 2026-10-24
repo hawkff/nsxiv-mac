@@ -1,8 +1,8 @@
 #!/bin/sh
 # Runs the Linux build in a headless mutter, GNOME's compositor, and checks that a window
 # that grows for a larger image stays on screen. mutter puts the small first window in the
-# middle; the slideshow's second image needs most of the screen, so a window that kept its
-# top-left corner would run past the bottom-right edge. Run under dbus-run-session.
+# middle, and the slideshow's second image needs most of the screen: grown from its top-left
+# corner, the window would run past the bottom-right edge. Run under dbus-run-session.
 set -eu
 bin=$1
 pics=$(mktemp -d)
