@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import CoreImage
 import CoreText
@@ -361,3 +362,4 @@ enum AnnotationRenderer {
         }
     }
 }
+#endif

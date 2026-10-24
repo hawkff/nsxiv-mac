@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import Foundation
+#endif
 
 // a key-handler that stops reading its stdin must not kill the viewer
 signal(SIGPIPE, SIG_IGN)
@@ -23,8 +27,12 @@ if files.isEmpty {
     exit(1)
 }
 
+#if os(macOS)
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 let controller = AppController(options: options, files: files)
 app.delegate = controller
 app.run()
+#else
+X11UI(viewer: Viewer(options: options, files: files)).run()
+#endif

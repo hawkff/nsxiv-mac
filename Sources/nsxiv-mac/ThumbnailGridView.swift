@@ -1,66 +1,16 @@
+#if os(macOS)
 import AppKit
 
+// Draws the viewer's grid from ThumbnailCache; mouse input goes to the viewer.
 final class ThumbnailGridView: NSView {
-    var files: [FileEntry] = [] { didSet { needsDisplay = true } }
-    var selection = 0
-    var onOpen: ((Int) -> Void)?
-    var onSelectionChange: (() -> Void)?
-    var onToggleMark: ((Int) -> Void)?
+    weak var viewer: Viewer?
     var cache: ThumbnailCache?
 
     // paths asked for and not cached yet; a failed one stays, so it is not asked for again
     private var requested: Set<String> = []
-    private var sizeIndex = Config.thumbSizeIndex
-    private var scrollY: CGFloat = 0
 
     override var acceptsFirstResponder: Bool { false }
     override var isFlipped: Bool { true }
-
-    private var thumbSize: CGFloat { Config.thumbSizes[sizeIndex] }
-    private var cellSize: CGFloat { thumbSize + Config.thumbPadding * 2 }
-
-    private var columns: Int {
-        max(1, Int(bounds.width / cellSize))
-    }
-
-    private var rows: Int {
-        files.isEmpty ? 0 : (files.count + columns - 1) / columns
-    }
-
-    private var contentHeight: CGFloat {
-        CGFloat(rows) * cellSize
-    }
-
-    // MARK: - selection
-
-    func moveSelection(_ direction: Direction) {
-        guard !files.isEmpty else { return }
-        var s = selection
-        switch direction {
-        case .left: s -= 1
-        case .right: s += 1
-        case .up: s -= columns
-        case .down: s += columns
-        }
-        selection = max(0, min(files.count - 1, s))
-        scrollToSelection()
-        needsDisplay = true
-        onSelectionChange?()
-    }
-
-    func select(_ index: Int) {
-        selection = max(0, min(files.count - 1, index))
-        scrollToSelection()
-        needsDisplay = true
-    }
-
-    func zoomThumbs(_ dir: Int) {
-        let ni = sizeIndex + dir
-        guard Config.thumbSizes.indices.contains(ni) else { return }
-        sizeIndex = ni
-        clampScroll()
-        needsDisplay = true
-    }
 
     // r, R and the key-handler: forget these thumbnails so the next draw generates them
     func invalidate(_ entries: [FileEntry]) {
@@ -71,81 +21,23 @@ final class ThumbnailGridView: NSView {
         needsDisplay = true
     }
 
-    func scrollPage(_ direction: Direction) {
-        switch direction {
-        case .up: scrollY -= bounds.height
-        case .down: scrollY += bounds.height
-        default: return
-        }
-        clampScroll()
-        needsDisplay = true
-    }
-
-    private func scrollToSelection() {
-        let r = cellRect(selection)
-        if r.minY < scrollY {
-            scrollY = r.minY
-        } else if r.maxY > scrollY + bounds.height {
-            scrollY = r.maxY - bounds.height
-        }
-        clampScroll()
-    }
-
-    private func clampScroll() {
-        scrollY = max(0, min(scrollY, max(0, contentHeight - bounds.height)))
-    }
-
-    private func cellRect(_ index: Int) -> CGRect {
-        let cols = columns
-        let row = index / cols, col = index % cols
-        let xInset = (bounds.width - CGFloat(cols) * cellSize) / 2
-        return CGRect(x: xInset + CGFloat(col) * cellSize,
-                      y: CGFloat(row) * cellSize,
-                      width: cellSize, height: cellSize)
-    }
-
-    private func indexAt(point: CGPoint) -> Int? {
-        let p = CGPoint(x: point.x, y: point.y + scrollY)
-        let cols = columns
-        let xInset = (bounds.width - CGFloat(cols) * cellSize) / 2
-        guard p.x >= xInset, p.x < xInset + CGFloat(cols) * cellSize, p.y >= 0 else { return nil }
-        let col = Int((p.x - xInset) / cellSize)
-        let row = Int(p.y / cellSize)
-        let i = row * cols + col
-        return files.indices.contains(i) ? i : nil
-    }
-
     // MARK: - drawing
-
-    override func layout() {
-        super.layout()
-        clampScroll()
-    }
 
     override func draw(_ dirtyRect: NSRect) {
         NSColor.windowBackgroundColor.setFill()
         dirtyRect.fill()
-        guard !files.isEmpty else { return }
-
-        let firstRow = max(0, Int(scrollY / cellSize))
-        let lastRow = min(rows - 1, Int((scrollY + bounds.height) / cellSize) + 1)
-        guard firstRow <= lastRow else { return }
-
-        for row in firstRow...lastRow {
-            for col in 0..<columns {
-                let i = row * columns + col
-                guard i < files.count else { break }
-                drawCell(i)
-            }
+        guard let viewer else { return }
+        for i in viewer.grid.visible {
+            drawCell(i, of: viewer)
         }
     }
 
-    private func drawCell(_ i: Int) {
-        var rect = cellRect(i)
-        rect.origin.y -= scrollY
+    private func drawCell(_ i: Int, of viewer: Viewer) {
+        let entry = viewer.files[i]
+        let rect = viewer.grid.cellRect(i)
         let inner = rect.insetBy(dx: Config.thumbPadding, dy: Config.thumbPadding)
 
-        if let thumb = cache?.cached(files[i]) {
+        if let thumb = cache?.cached(entry) {
             let tw = CGFloat(thumb.width), th = CGFloat(thumb.height)
             let scale = min(inner.width / tw, inner.height / th, 1)
             let dw = tw * scale, dh = th * scale
@@ -161,16 +53,16 @@ final class ThumbnailGridView: NSView {
         } else {
             NSColor.quaternaryLabelColor.setFill()
             inner.insetBy(dx: inner.width * 0.25, dy: inner.height * 0.25).fill()
-            request(i)
+            request(entry)
         }
 
-        if i == selection {
+        if i == viewer.current {
             let path = NSBezierPath(rect: rect.insetBy(dx: 2, dy: 2))
             path.lineWidth = 3
             NSColor.controlAccentColor.setStroke()
             path.stroke()
         }
-        if files[i].marked {
+        if entry.marked {
             let d: CGFloat = 8
             let dot = NSBezierPath(ovalIn: CGRect(
                 x: rect.maxX - d - 6, y: rect.minY + 6, width: d, height: d))
@@ -179,8 +71,7 @@ final class ThumbnailGridView: NSView {
         }
     }
 
-    private func request(_ i: Int) {
-        let entry = files[i]
+    private func request(_ entry: FileEntry) {
         guard let cache, requested.insert(entry.path).inserted else { return }
         cache.thumbnail(for: entry) { [weak self] img in
             guard let self else { return }
@@ -193,27 +84,26 @@ final class ThumbnailGridView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        guard let i = indexAt(point: p) else { return }
+        guard let viewer, let i = viewer.grid.index(at: p) else { return }
         if event.clickCount >= 2 {
-            onOpen?(i)
+            viewer.open(i)
         } else {
-            select(i)
-            onSelectionChange?()
+            viewer.select(i)
         }
     }
 
     override func rightMouseDown(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
-        guard let i = indexAt(point: p) else { return }
-        onToggleMark?(i) // marks without moving the selection, like nsxiv
+        guard let viewer, let i = viewer.grid.index(at: p) else { return }
+        viewer.toggleMark(at: i) // marks without moving the selection, like nsxiv
     }
 
     override func scrollWheel(with event: NSEvent) {
+        guard let viewer else { return }
         let dy = event.hasPreciseScrollingDeltas
             ? event.scrollingDeltaY
-            : event.scrollingDeltaY * cellSize / 3
-        scrollY -= dy
-        clampScroll()
-        needsDisplay = true
+            : event.scrollingDeltaY * viewer.grid.cellSize / 3
+        viewer.scrollGrid(by: -dy)
     }
 }
+#endif

@@ -1,4 +1,8 @@
+#if os(macOS)
 import AppKit
+#else
+import Foundation
+#endif
 
 // Build-time settings, in the spirit of nsxiv's config.h.
 // Edit and rebuild to customize.
@@ -30,9 +34,19 @@ enum Config {
     static let thumbPadding: CGFloat = 10
     static let thumbMaxPixel = 320
 
+    #if os(macOS)
     static let barHeight: CGFloat = 24
     static var barFont: NSFont { .monospacedSystemFont(ofSize: 11, weight: .regular) }
     static var markColor: NSColor { .systemYellow }
+    #else
+    // X11 colors (names or #rrggbb) and the bar font (a fontconfig pattern)
+    static let background = "#ffffff"
+    static let foreground = "#000000"
+    static let barBackground = "#eeeeee"
+    static let selectionColor = "#3478f6"
+    static let markColor = "#ffcc00"
+    static let barFont = "monospace:size=9"
+    #endif
 
     // fraction of window width used as prev/next click zones
     static let navWidthFraction: CGFloat = 0.33

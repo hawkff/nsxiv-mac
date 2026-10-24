@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 
 final class EditSession {
@@ -284,3 +285,4 @@ final class EditCanvasView: NSView {
         return out
     }
 }
+#endif

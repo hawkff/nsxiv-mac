@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import UniformTypeIdentifiers
 
@@ -342,3 +343,4 @@ final class EditController {
         return dest
     }
 }
+#endif

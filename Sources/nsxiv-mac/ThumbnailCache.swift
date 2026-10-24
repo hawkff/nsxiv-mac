@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import ImageIO
 import QuickLookThumbnailing
@@ -54,3 +55,4 @@ final class ThumbnailCache {
         return CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
     }
 }
+#endif
