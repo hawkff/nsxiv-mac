@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs the Linux build as a Wayland client of niri at scale 1.5, with niri nested in a
-# headless sway that grim photographs: tiled in a column, then fullscreen, then closed
-# by niri. Screenshots land in $2.
+# headless sway that grim photographs: in a column whose width niri leaves to the
+# window, then fullscreen, then closed by niri. Screenshots land in $2.
 set -eu
 bin=$1
 shots=$2
@@ -37,6 +37,13 @@ host=$(next_socket)
 cat >"$pics/niri.kdl" <<'EOF'
 output "winit" {
     scale 1.5
+}
+window-rule {
+    match app-id="nsxiv-mac"
+    default-column-width {}
+}
+hotkey-overlay {
+    skip-at-startup
 }
 EOF
 WAYLAND_DISPLAY=$host LIBGL_ALWAYS_SOFTWARE=1 niri -c "$pics/niri.kdl" &
