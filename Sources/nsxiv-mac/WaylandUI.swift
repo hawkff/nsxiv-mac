@@ -780,6 +780,7 @@ final class WaylandUI: ViewerUI {
     // Hyprland configures a new popup as asked and trims it once it is repositioned
     private func probeConfigured(_ serial: UInt32) {
         guard let probe else { return }
+        warn("probe reply \(String(describing: probed)) repositioned \(probe.repositioned) size \(size)") // TEMP
         let trimmed = probed.map { $0.width < 1 << 20 && $0.height < 1 << 20 } ?? false
         if !trimmed, !probe.repositioned, wmBaseVersion >= 3 {
             xdg_surface_ack_configure(probe.role, serial)
