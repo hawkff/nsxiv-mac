@@ -40,7 +40,6 @@ final class X11UI: ViewerUI {
     private var failedThumbs: Set<String> = []
     private var thumbnailPending = false
 
-    private var keysDown: Set<UInt32> = [] // keycodes pressed and not released
     private var pointer = CGPoint.zero
     private var dragging = false
     private var dragged = false
@@ -76,7 +75,7 @@ final class X11UI: ViewerUI {
         attrs.border_pixel = 0
         attrs.background_pixel = background.pixel
         attrs.event_mask = KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask
-            | PointerMotionMask | StructureNotifyMask | ExposureMask | PropertyChangeMask | FocusChangeMask
+            | PointerMotionMask | StructureNotifyMask | ExposureMask | PropertyChangeMask
         let win = XCreateWindow(dpy, XRootWindow(dpy, screen), 0, 0, UInt32(size.width), UInt32(size.height), 0,
                                 depth, UInt32(InputOutput), visual,
                                 UInt(CWColormap | CWBorderPixel | CWBackPixel | CWEventMask), &attrs)
@@ -95,7 +94,9 @@ final class X11UI: ViewerUI {
         XSetWMProtocols(dpy, win, &protocols, 1)
         var hint = XClassHint(res_name: strdup(Config.appName), res_class: strdup(Config.appName))
         XSetClassHint(dpy, win, &hint)
-        // auto-repeat sends presses alone, so a release marks the end of a held key
+        // auto-repeat then sends presses alone, and the release comes when the key does
+        // shortcut: a server without it sends a release before each repeat, so dropRepeats
+        // keeps them all; X.org, Xvfb and XWayland have it
         var detectable: Int32 = 0
         XkbSetDetectableAutoRepeat(dpy, 1, &detectable)
 
@@ -113,6 +114,11 @@ final class X11UI: ViewerUI {
             warn("cannot allocate color \(Config.foreground)")
         }
         viewer.ui = self
+    }
+
+    private struct RepeatScan {
+        let keycode: UInt32
+        var released = false
     }
 
     private static func color(_ name: String, _ dpy: OpaquePointer, _ colormap: Colormap) -> XColor {
@@ -143,17 +149,8 @@ final class X11UI: ViewerUI {
             XNextEvent(dpy, &ev)
             switch ev.type {
             case KeyPress:
-                // with detectable auto-repeat, a press of a key already down is a repeat; a held key
-                // outruns large decodes, so a repeat with another one queued behind it is skipped
-                let repeated = !keysDown.insert(ev.xkey.keycode).inserted
-                if repeated, XEventsQueued(dpy, QueuedAfterReading) > 0 {
-                    var next = XEvent()
-                    XPeekEvent(dpy, &next)
-                    if next.type == KeyPress, next.xkey.keycode == ev.xkey.keycode { continue }
-                }
                 keyPressed(&ev.xkey)
-            case KeyRelease: keysDown.remove(ev.xkey.keycode)
-            case FocusOut: keysDown.removeAll() // releases go to the window that has focus
+                dropRepeats(of: ev.xkey.keycode)
             case ButtonPress: buttonPressed(ev.xbutton)
             case ButtonRelease: buttonReleased(ev.xbutton)
             case MotionNotify:
@@ -180,6 +177,22 @@ final class X11UI: ViewerUI {
         XLookupString(&key, &text, Int32(text.count), &sym, nil)
         guard let name = Self.keyName(sym) else { return }
         _ = viewer.handle(Keystroke(key: name, ctrl: key.state & UInt32(ControlMask) != 0))
+    }
+
+    // A held key outruns large decodes. The presses of that key queued while the last one
+    // was handled go, past other events but not past the key's release, so taps still count.
+    private func dropRepeats(of keycode: UInt32) {
+        var scan = RepeatScan(keycode: keycode)
+        var dropped = XEvent()
+        while withUnsafeMutablePointer(to: &scan, { scan in
+            XCheckIfEvent(dpy, &dropped, { _, event, arg in
+                guard let e = event?.pointee, let arg, e.type == KeyPress || e.type == KeyRelease else { return 0 }
+                let scan = UnsafeMutableRawPointer(arg).assumingMemoryBound(to: RepeatScan.self)
+                guard e.xkey.keycode == scan.pointee.keycode, !scan.pointee.released else { return 0 }
+                if e.type == KeyRelease { scan.pointee.released = true }
+                return e.type == KeyPress ? 1 : 0
+            }, UnsafeMutableRawPointer(scan).assumingMemoryBound(to: CChar.self))
+        }) != 0 {}
     }
 
     // printable ASCII as typed, other keys by their keysym name; a modifier alone is no key
