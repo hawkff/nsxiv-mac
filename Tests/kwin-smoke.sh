@@ -17,7 +17,8 @@ XDG_CURRENT_DESKTOP=KDE
 export XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP
 unset DISPLAY WAYLAND_DISPLAY SWAYSOCK
 trap 'kill ${pid:-} ${kwin:-} 2>/dev/null || true' EXIT
-QT_LOGGING_RULES='js=true;kwin_scripting=true' KWIN_COMPOSE=Q \
+# Qt logs to the journal when stderr is no terminal; a container has no journal
+QT_FORCE_STDERR_LOGGING=1 QT_LOGGING_RULES='js=true;kwin_scripting=true' KWIN_COMPOSE=Q \
     kwin_wayland --virtual --width=1280 --height=800 --socket=wayland-k --no-lockscreen 2>"$log" &
 kwin=$!
 for _ in $(seq 150); do
