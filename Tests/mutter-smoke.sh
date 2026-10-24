@@ -56,7 +56,11 @@ echo "monitors: $monitors x 1280x800; asked past an edge: ${past:-never}; placed
 if [ "$monitors" -eq 1 ]; then
     [ -n "$past" ] || { echo "the window never asked to run past the edge, so mutter was not tested" >&2; exit 1; }
 else
-    [ -z "$past" ] || { echo "the viewer asked to run onto the next monitor: $past" >&2; exit 1; }
+    [ -z "$past" ] || {
+        echo "the viewer asked to run onto the next monitor: $past" >&2
+        grep -E 'Constraining|info->current|Setting up constraint|work_area_monitor|placement' "$log" | tail -60 >&2 # TEMP
+        exit 1
+    }
 fi
 # shellcheck disable=SC2086
 set -- $final
