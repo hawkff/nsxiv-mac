@@ -62,6 +62,12 @@ set -- $area $frame
 [ "$7" -ge 1000 ] || { echo "the window did not grow for the large image" >&2; exit 1; }
 [ "$5" -ge "$1" ] && [ "$6" -ge "$2" ] && [ $(($5 + $7)) -le $(($1 + $3)) ] && [ $(($6 + $8)) -le $(($2 + $4)) ] ||
     { echo "the grown window ran past the work area" >&2; tail -40 "$log" >&2; exit 1; }
+frames=$(sed -n 's/.*nsxiv-test frame //p' "$log")
+echo "frames: $(echo "$frames" | tr '\n' ';')"
+# the grown window first ran past the edge, so the viewer's script had something to fix
+echo "$frames" | awk -v r=$(($1 + $3)) -v b=$(($2 + $4)) \
+    '$3 >= 1000 && ($1 + $3 > r || $2 + $4 > b) { found = 1 } END { exit !found }' ||
+    { echo "the window never ran past the edge, so nothing was tested" >&2; exit 1; }
 
 kill "$pid"
 sleep 2
