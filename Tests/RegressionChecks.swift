@@ -177,11 +177,12 @@ struct RegressionChecks {
     }
     #else
     static func checkX11Helpers() {
-        assert(X11UI.keyName(0x47) == "G" && X11UI.keyName(0x20) == " ", "printable keys arrive as typed")
-        assert(X11UI.keyName(0xff0d) == "Return" && X11UI.keyName(0xff51) == "Left", "other keys go by keysym name")
-        assert(X11UI.keyName(0xffe1) == nil, "Shift alone is no key")
-        let cut = X11UI.truncatedHead("abcdefgh", width: 5) { $0.count }
-        assert(cut == "…efgh" && X11UI.truncatedHead("abc", width: 5) { $0.count } == "abc",
+        assert(keyName(forKeysym: 0x47) == "G" && keyName(forKeysym: 0x20) == " ", "printable keys arrive as typed")
+        assert(keyName(forKeysym: 0xff0d) == "Return" && keyName(forKeysym: 0xff51) == "Left",
+               "other keys go by keysym name")
+        assert(keyName(forKeysym: 0xffe1) == nil, "Shift alone is no key")
+        let cut = ImlibRenderer.truncatedHead("abcdefgh", width: 5) { $0.count }
+        assert(cut == "…efgh" && ImlibRenderer.truncatedHead("abc", width: 5) { $0.count } == "abc",
                "long names lose their start: \(cut)")
     }
     #endif

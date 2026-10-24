@@ -5,17 +5,25 @@ let package = Package(
     name: "nsxiv-mac",
     platforms: [.macOS(.v13)],
     targets: [
-        // Xlib, Xft and Imlib2 for the Linux build
-        .systemLibrary(
-            name: "CX11",
-            path: "Sources/CX11",
-            pkgConfig: "x11 xft imlib2",
-            providers: [.apt(["libx11-dev", "libxft-dev", "libimlib2-dev"])]
-        ),
-        .executableTarget(
-            name: "nsxiv-mac",
-            dependencies: [.target(name: "CX11", condition: .when(platforms: [.linux]))],
-            path: "Sources/nsxiv-mac"
-        ),
+        .executableTarget(name: "nsxiv-mac", path: "Sources/nsxiv-mac"),
     ]
 )
+
+#if os(Linux)
+// Linux draws with Imlib2, on X11 through Xlib or on Wayland through libwayland
+package.targets += [
+    .systemLibrary(
+        name: "CX11",
+        path: "Sources/CX11",
+        pkgConfig: "x11 imlib2 fontconfig",
+        providers: [.apt(["libx11-dev", "libimlib2-dev", "libfontconfig-dev"])]
+    ),
+    .target(
+        name: "CWayland",
+        path: "Sources/CWayland",
+        linkerSettings: [.linkedLibrary("wayland-client"), .linkedLibrary("wayland-cursor"),
+                         .linkedLibrary("xkbcommon")]
+    ),
+]
+package.targets[0].dependencies += ["CX11", "CWayland"]
+#endif

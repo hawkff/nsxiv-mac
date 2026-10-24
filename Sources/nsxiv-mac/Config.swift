@@ -39,13 +39,13 @@ enum Config {
     static var barFont: NSFont { .monospacedSystemFont(ofSize: 11, weight: .regular) }
     static var markColor: NSColor { .systemYellow }
     #else
-    // X11 colors (names or #rrggbb) and the bar font (a fontconfig pattern)
+    // colors as #rrggbb, and the bar font as a fontconfig pattern
     static let background = "#ffffff"
     static let foreground = "#000000"
     static let barBackground = "#eeeeee"
     static let selectionColor = "#3478f6"
     static let markColor = "#ffcc00"
-    static let barFont = "monospace:size=9"
+    static let barFont = "monospace:pixelsize=13"
     #endif
 
     // fraction of window width used as prev/next click zones

@@ -38,11 +38,12 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      - name: Install X11, Xft and Imlib2
+      - name: Install X11, Wayland and Imlib2
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends libx11-dev libxft-dev libimlib2-dev pkg-config \
-            xvfb xauth xdotool imagemagick fonts-dejavu-core
+          apt-get install -y --no-install-recommends libx11-dev libimlib2-dev libfontconfig-dev \
+            libwayland-dev libxkbcommon-dev pkg-config xvfb xauth xdotool imagemagick fonts-dejavu-core \
+            sway grim wtype
       - name: Build
         run: swift build -c release --static-swift-stdlib
       - name: Smoke test
@@ -51,20 +52,25 @@ jobs:
         run: |
           sources=()
           for source in Sources/nsxiv-mac/*.swift; do
-            if [[ "$source" != */main.swift ]]; then sources+=("$source"); fi
+            # the Wayland frontend needs the CWayland C target, which only SwiftPM builds
+            if [[ "$source" != */main.swift && "$source" != */WaylandUI.swift ]]; then sources+=("$source"); fi
           done
           flags=()
-          for flag in $(pkg-config --cflags x11 xft imlib2); do flags+=(-Xcc "$flag"); done
+          for flag in $(pkg-config --cflags x11 imlib2 fontconfig); do flags+=(-Xcc "$flag"); done
           swiftc -parse-as-library -I Sources/CX11 "${flags[@]}" "${sources[@]}" Tests/RegressionChecks.swift \
             -o "$RUNNER_TEMP/nsxiv-regressions"
           "$RUNNER_TEMP/nsxiv-regressions"
       - name: Run under X
         run: xvfb-run -a -s "-screen 0 1280x800x24" sh Tests/x11-smoke.sh .build/release/nsxiv-mac shots
+      - name: Run under Wayland
+        run: sh Tests/wayland-smoke.sh .build/release/nsxiv-mac wayland-shots
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: x11-screenshots
-          path: shots
+          name: screenshots
+          path: |
+            shots
+            wayland-shots
       - name: Package
         run: tar -czf nsxiv-mac-linux.tar.gz -C .build/release nsxiv-mac
       - uses: actions/upload-artifact@v4
