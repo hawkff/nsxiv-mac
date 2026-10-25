@@ -12,7 +12,12 @@
 # Then m marks the image, and SIGTERM must end the viewer as q does: the terminal comes back in
 # the mode it found, without images, before -o prints the marked file. In "kitty-budget", a
 # large terminal, the viewer starts on the second of three images, and must send only the third
-# ahead, as the first would push it out of what the terminal keeps.
+# ahead, as the first would push it out of what the terminal keeps. In "sixel", a terminal with
+# sixels and no kitty graphics, the images must come from chafa as sixels of whole bands short
+# of the bar. In "tmux", the viewer runs in tmux with allow-passthrough, and this script is the
+# terminal around tmux: the viewer must ask it through tmux, and show each image as placeholders
+# tmux draws, of a virtual placement it passes on.
+# shortcut: the tmux mode skips -o, which prints in a pane that closes with the viewer
 set -eu
 bin=$1
 mode=${2:-symbols}
@@ -43,11 +48,20 @@ else # rows, columns, then pixels; 0x5414 is TIOCSWINSZ
 fi
 tty >"$pics/tty"
 before=$(stty -g)
-sh -c 'echo $$ >"$pics/pid"; exec "$bin" $start -o "$pics"'
+if [ "$mode" = tmux ]; then
+    tmux -L nsxiv-smoke -f "$pics/tmux.conf" new-session "sh $pics/run"
+else
+    sh "$pics/run"
+fi
 status=$?
 [ "$(stty -g)" = "$before" ] || echo "the terminal mode changed"
 exit "$status"
 EOF
+cat >"$pics/run" <<'EOF'
+echo $$ >"$pics/pid"
+exec "$bin" $start -o "$pics"
+EOF
+printf 'set -g allow-passthrough on\nset -g status off\nset -g escape-time 10\n' >"$pics/tmux.conf"
 timeout 60 script -q -e -c "sh $pics/session" /dev/null <"$keys" >"$out" &
 session=$!
 exec 3>"$keys"
@@ -70,7 +84,11 @@ sends() {
     fail "$3"
 }
 # the id of the last kitty command of kind $1
-last() { grep -a -o "$(printf '\033_G')$1,i=[0-9]*" "$out" | tail -1 | sed 's/.*i=//'; }
+last() { grep -a -o -E "$(printf '\033_G')$1,(U=1,)?i=[0-9]+" "$out" | tail -1 | sed 's/.*i=//'; }
+# how many sixel images the viewer drew
+sixels() { grep -a -o -F "$(printf '\033P')" "$out" | wc -l; }
+# placeholders tmux drew in the color of image $1: U+10EEEE in the foreground of its low byte
+placed() { printf '\033[38;5;%sm\364\216\273\256' "$(($1 & 255))"; }
 # The image the viewer sent as id $1, written to $pics/image-$1.png: PNG chunks up to the one
 # with m=0, or raw RGB in the file whose path came base64 encoded
 picture() {
@@ -127,6 +145,38 @@ if [ "$mode" = symbols ]; then
     printf j >&3
     stty -F "$(cat "$pics/tty")" cols 80 rows 20
     drawn -F "$(printf '\033[20;1H')" "a smaller terminal did not get the status bar on its last line"
+elif [ "$mode" = sixel ]; then
+    drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask what the terminal shows"
+    printf '\033[?62;4;22c' >&3 # foot's answer: sixels, and no kitty graphics
+    # 100 columns of 10 pixels, and 29 rows of 20 above the bar in whole bands of 6: 1000x576
+    drawn -F "$(printf '\033P0;1;0q"1;1;1000;576#')" "the viewer drew no sixel image of 1000x576 pixels"
+    drawn -F 1-red.png "the status bar never named the first image"
+    drawn -E '#[0-9]+;2;100;0;0' "the first sixel image has no red"
+    printf j >&3
+    drawn -F 2-blue.png "j did not name the second image"
+    drawn -E '#[0-9]+;2;0;0;100' "j drew no blue sixel image"
+    magick -size 2000x1160 xc:lime "$pics/1-red.png"
+    printf k >&3
+    drawn -E '#[0-9]+;2;0;100;0' "k drew the first image as it was before it changed"
+    printf j >&3
+    for _ in $(seq 100); do [ "$(sixels)" -ge 4 ] && break; sleep 0.1; done
+    [ "$(sixels)" -eq 4 ] || fail "the viewer drew $(sixels) sixel images, not 4"
+elif [ "$mode" = tmux ]; then
+    # tmux asks the terminal's attributes as it starts, then passes on what the viewer asks
+    drawn -F "$(printf '\033[c')" "tmux did not ask the terminal's attributes"
+    printf '\033[?62;22c' >&3
+    drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask through tmux whether the terminal shows kitty graphics"
+    printf '\033_Gi=31;OK\033\\\033_Gi=32;OK\033\\\033[?62;22c' >&3
+    drawn -F "$(printf '\033_Ga=T,U=1,')" "the viewer sent no image for placeholders through tmux"
+    drawn -F 1-red.png "the status bar never named the first image"
+    red=$(last a=T)
+    drawn -F "$(placed "$red")" "tmux drew no placeholders for the red image"
+    drawn -F "$(printf '\033_Ga=t,')" "the viewer did not send the next image ahead"
+    blue=$(last a=t)
+    printf j >&3
+    drawn -F "$(printf '\033_Ga=p,U=1,i=%s,' "$blue")" "j did not place the blue image sent ahead"
+    drawn -F "$(placed "$blue")" "tmux drew no placeholders for the blue image"
+    drawn -F 2-blue.png "j did not name the second image"
 else
     drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask whether the terminal shows kitty graphics"
     if [ "$mode" = kitty ]; then files='EBADF:Failed to read image file' medium=png; else files=OK medium=file; fi
@@ -180,21 +230,27 @@ else
     printf j >&3
     drawn -F "$(printf '\033_Ga=p,i=%s,' "$blue")" "j did not show the blue image sent again"
 fi
-before="$(sent a=T) $(sent a=t) $(sent a=p)"
+before="$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)"
 printf m >&3
 drawn -F '*1 |' "m did not mark the image"
 # the mark, on the last image, changed only the status bar, which goes without the image
-[ "$(sent a=T) $(sent a=t) $(sent a=p)" = "$before" ] || fail "the mark sent or placed an image again"
+[ "$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)" = "$before" ] || fail "the mark sent or placed an image again"
 kill -TERM "$(cat "$pics/pid")"
 wait "$session" || fail "SIGTERM did not end the viewer cleanly"
 if grep -a -q 'the terminal mode changed' "$out"; then fail "the viewer left the terminal in another mode"; fi
+if [ "$mode" = tmux ]; then
+    grep -a -q -F "$(printf '\033_Ga=d,d=I,i=%s,' "$blue")" "$out" ||
+        fail "the viewer left its images in the terminal around tmux"
+    echo "$mode: drew $(wc -c <"$out") bytes through tmux"
+    exit
+fi
 leave=$(printf '\033[?1049l')
 at=$(grep -a -b -o -F "$leave" "$out" | tail -1 | cut -d: -f1)
 [ -n "$at" ] || fail "the viewer did not leave the alternate screen"
-if [ "$mode" != symbols ]; then
+case $mode in kitty*)
     grep -a -q -F "$(printf '\033_Ga=d,d=A,q=2\033\\\033[0m\033[?7h\033[?25h\033[?1049l')" "$out" ||
         fail "the viewer left its image on the screen"
-fi
+esac
 tail -c +$((at + ${#leave} + 1)) "$out" | grep -a -q -F "$pics/2-blue.png" ||
     fail "-o did not print the marked file once the terminal was back"
 echo "$mode: drew $(wc -c <"$out") bytes, then printed the marked $pics/2-blue.png"

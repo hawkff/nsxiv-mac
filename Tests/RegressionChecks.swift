@@ -239,13 +239,34 @@ struct RegressionChecks {
                "keys typed during the probe count, and the answers end only a C-x prefix: \(probed)")
         // herdr's answer, that of a terminal that cannot read the viewer's files, that of one
         // without kitty graphics, and an answer still on its way
-        let herdr = TerminalUI.kittyGraphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}_Gi=32;OK\u{1b}\\\u{1b}[?62;22c".utf8))
-        let remote = TerminalUI.kittyGraphics(
+        let herdr = TerminalUI.graphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}_Gi=32;OK\u{1b}\\\u{1b}[?62;22c".utf8))
+        let remote = TerminalUI.graphics(
             in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}_Gi=32;EBADF:Failed to read image file\u{1b}\\\u{1b}[?62;22c".utf8))
-        let none = TerminalUI.kittyGraphics(in: Array("\u{1b}[?1;2c".utf8))
-        assert(herdr! == (true, true) && remote! == (true, false) && none! == (false, false)
-               && TerminalUI.kittyGraphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62".utf8)) == nil,
-               "the probe tells kitty graphics, and frames in files, from their absence, once the device attributes came")
+        let none = TerminalUI.graphics(in: Array("\u{1b}[?1;2c".utf8))
+        // foot's attributes, and a VT132's, whose 4 is its class rather than sixels
+        let foot = TerminalUI.graphics(in: Array("\u{1b}[?62;4;22c".utf8))
+        let vt132 = TerminalUI.graphics(in: Array("\u{1b}[?4;2c".utf8))
+        assert(herdr! == (true, true, false) && remote! == (true, false, false) && none! == (false, false, false)
+               && foot! == (false, false, true) && vt132! == (false, false, false)
+               && TerminalUI.graphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62".utf8)) == nil,
+               "the probe tells kitty graphics, frames in files and sixels from their absence, once the device attributes came")
+        assert(TerminalUI.tmuxSupport("on|1|bpaste,clipboard,sixel,sync\n") == (true, true)
+               && TerminalUI.tmuxSupport("all|1|RGB\n") == (true, false) && TerminalUI.tmuxSupport("off||sixel\n") == (false, false)
+               && TerminalUI.tmuxSupport("") == (false, false),
+               "tmux passes kitty graphics with allow-passthrough, and sixels where it and its client have them")
+        assert(TerminalUI.passthrough("\u{1b}_Ga=q\u{1b}\\") == "\u{1b}Ptmux;\u{1b}\u{1b}_Ga=q\u{1b}\u{1b}\\\u{1b}\\",
+               "a command for the terminal around tmux goes in tmux's passthrough, its escapes doubled")
+        // image 3 << 24 | 200 in two rows of three cells: rows 0 and 1, column 0 and high byte 3 on
+        // the first cell of each row
+        assert(TerminalUI.placeholders(id: 3 << 24 | 200, columns: 3, rows: 2)
+               == "\u{1b}[38;5;200m\u{1b}[1;1H\u{10EEEE}\u{305}\u{305}\u{310}\u{10EEEE}\u{10EEEE}"
+               + "\u{1b}[2;1H\u{10EEEE}\u{30D}\u{305}\u{310}\u{10EEEE}\u{10EEEE}\u{1b}[39m",
+               "placeholders name the image in their color and a diacritic, and their rows and columns in diacritics")
+        // chafa's sixel image of two bands of 6 rows, padded with a third, cut back to its canvas
+        let padded = Array("\u{1b}P0;1;0q\"1;1;4;18#0;2;100;0;0#0!4~-#0!4~-#0!4~\u{1b}\\".utf8)
+        assert(TerminalUI.sixelImage(padded, height: 12) == Array("\u{1b}P0;1;0q\"1;1;4;12#0;2;100;0;0#0!4~-#0!4~\u{1b}\\".utf8)
+               && TerminalUI.sixelImage(padded, height: 18) == padded,
+               "a sixel image chafa padded is cut to its canvas, and its raster attributes with it")
         let answers = Array("\u{1b}_Gi=77,p=1;ENOENT:No such image\u{1b}\\\u{1b}_Gi=78;OK\u{1b}\\".utf8)
         assert(TerminalUI.missingImages(in: answers) == [77], "a placement the terminal could not make names its image")
         let png = Data((0..<5000).map { UInt8($0 & 0xff) })

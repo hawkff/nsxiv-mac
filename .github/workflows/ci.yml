@@ -46,7 +46,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends libx11-dev libimlib2-dev libfontconfig-dev \
             libwayland-dev libxkbcommon-dev pkg-config xvfb xauth xdotool imagemagick fonts-dejavu-core \
-            sway grim wtype jq weston mutter dbus-daemon labwc chafa
+            sway grim wtype jq weston mutter dbus-daemon labwc chafa tmux
       - name: Build
         run: swift build -c release --static-swift-stdlib
       - name: Smoke test
@@ -92,6 +92,10 @@ jobs:
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty-files
       - name: Run in a large terminal with kitty graphics, where two neighbors do not both fit
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty-budget
+      - name: Run in a terminal with sixels, through chafa 1.14
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac sixel
+      - name: Run in tmux, in a terminal with kitty graphics around it
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac tmux
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -116,7 +120,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed base-devel libx11 imlib2 fontconfig wayland libxkbcommon \
             libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim wtype imagemagick mesa kwin wayfire \
-            jq river-classic cosmic-comp chafa
+            jq river-classic cosmic-comp chafa tmux
           useradd -m tester # Wayfire refuses to run as root
           # the toolchain the AUR's swift-bin repackages, with ncurses under its Arch name; the
           # hash is of the tarball the Swift 6.x release key signed
@@ -153,6 +157,10 @@ jobs:
         run: dbus-run-session -- sh Tests/cosmic-smoke.sh .build/release/nsxiv-mac cosmic-shots
       - name: Run in a terminal with no display, through a chafa that probes terminals
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac symbols
+      - name: Run in a terminal with sixels, through the latest chafa
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac sixel
+      - name: Run in the latest tmux, in a terminal with kitty graphics around it
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac tmux
       - uses: actions/upload-artifact@v4
         if: always()
         with:
