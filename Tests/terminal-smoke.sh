@@ -87,8 +87,9 @@ sends() {
 last() { grep -a -o -E "$(printf '\033_G')$1,(U=1,)?i=[0-9]+" "$out" | tail -1 | sed 's/.*i=//'; }
 # how many sixel images the viewer drew
 sixels() { grep -a -o -F "$(printf '\033P')" "$out" | wc -l; }
-# placeholders tmux drew in the color of image $1: U+10EEEE in the foreground of its low byte
-placed() { printf '\033[38;5;%sm\364\216\273\256' "$(($1 & 255))"; }
+# a pattern for placeholders tmux drew in the color of image $1: U+10EEEE in the foreground of
+# its low byte, perhaps after a move of the cursor
+placed() { printf '\033\\[38;5;%sm(\033\\[[0-9;]*H)?\364\216\273\256' "$(($1 & 255))"; }
 # The image the viewer sent as id $1, written to $pics/image-$1.png: PNG chunks up to the one
 # with m=0, or raw RGB in the file whose path came base64 encoded
 picture() {
@@ -148,8 +149,9 @@ if [ "$mode" = symbols ]; then
 elif [ "$mode" = sixel ]; then
     drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask what the terminal shows"
     printf '\033[?62;4;22c' >&3 # foot's answer: sixels, and no kitty graphics
-    # 100 columns of 10 pixels, and 29 rows of 20 above the bar in whole bands of 6: 1000x576
-    drawn -F "$(printf '\033P0;1;0q"1;1;1000;576#')" "the viewer drew no sixel image of 1000x576 pixels"
+    # 100 columns of 10 pixels, and 29 rows of 20 above the bar in whole bands of 6: 1000x576,
+    # in raster attributes after an introducer that differs between chafa versions
+    drawn -F '"1;1;1000;576#' "the viewer drew no sixel image of 1000x576 pixels"
     drawn -F 1-red.png "the status bar never named the first image"
     drawn -E '#[0-9]+;2;100;0;0' "the first sixel image has no red"
     printf j >&3
@@ -170,12 +172,12 @@ elif [ "$mode" = tmux ]; then
     drawn -F "$(printf '\033_Ga=T,U=1,')" "the viewer sent no image for placeholders through tmux"
     drawn -F 1-red.png "the status bar never named the first image"
     red=$(last a=T)
-    drawn -F "$(placed "$red")" "tmux drew no placeholders for the red image"
+    drawn -E "$(placed "$red")" "tmux drew no placeholders for the red image"
     drawn -F "$(printf '\033_Ga=t,')" "the viewer did not send the next image ahead"
     blue=$(last a=t)
     printf j >&3
     drawn -F "$(printf '\033_Ga=p,U=1,i=%s,' "$blue")" "j did not place the blue image sent ahead"
-    drawn -F "$(placed "$blue")" "tmux drew no placeholders for the blue image"
+    drawn -E "$(placed "$blue")" "tmux drew no placeholders for the blue image"
     drawn -F 2-blue.png "j did not name the second image"
 else
     drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask whether the terminal shows kitty graphics"
