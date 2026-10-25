@@ -36,6 +36,12 @@ protocol ViewerUI: AnyObject {
     func beep()
     // false where edit mode does not exist
     func enterEditMode() -> Bool
+    // the viewer is about to print to stdout and exit
+    func willQuit()
+}
+
+extension ViewerUI {
+    func willQuit() {}
 }
 
 // The image list, marks, modes and key bindings, shared by both windowing systems.
@@ -219,6 +225,7 @@ final class Viewer {
     }
 
     func quit() -> Never {
+        ui?.willQuit()
         printMarkedIfNeeded()
         exit(0)
     }
@@ -616,6 +623,7 @@ final class Viewer {
         case "q": quit()
         case "Q":
             // pick-quit: print the current file and exit (nsxiv g_pick_quit)
+            ui?.willQuit()
             if let entry = currentEntry { print(entry.path) }
             markedPrinted = true
             exit(0)

@@ -20,6 +20,8 @@ final class TerminalUI: ViewerUI {
     private var cellWidth = 8 // canvas pixels across a cell, which is 16 pixels high
     private var redrawDue: DispatchTime?
     private var sources: [DispatchSourceProtocol] = []
+    private var cutOff: [UInt8] = [] // an escape sequence the last read ended inside
+    private var cutOffTimeout: DispatchWorkItem?
 
     // what atexit puts back
     private static var saved: (tty: Int32, mode: termios, frame: String)?
@@ -67,8 +69,6 @@ final class TerminalUI: ViewerUI {
         Self.writeAll(tty, Array("\u{1b}[?1049h\u{1b}[?25l\u{1b}[?7l".utf8))
         Self.saved = (tty, mode, frame)
         atexit { TerminalUI.restoreTerminal() }
-        // -o and Q print once the terminal is back: exit flushes stdout after the atexit handlers
-        setvbuf(stdout, nil, _IOFBF, 1 << 20)
 
         renderer.onThumbnail = { [unowned self] in self.setNeedsRedraw(after: 0.3) }
         viewer.ui = self
@@ -93,6 +93,9 @@ final class TerminalUI: ViewerUI {
         dispatchMain()
     }
 
+    // -o and Q print to the terminal once it is back
+    func willQuit() { Self.restoreTerminal() }
+
     private static func restoreTerminal() {
         guard var saved = Self.saved else { return }
         Self.saved = nil
@@ -108,7 +111,23 @@ final class TerminalUI: ViewerUI {
         let n = read(tty, &bytes, bytes.count)
         if n < 0, errno == EINTR || errno == EAGAIN { return }
         guard n > 0 else { viewer.quit() } // the terminal went away
-        for key in Self.collapsingRepeats(Self.keys(in: Array(bytes[..<n]))) {
+        cutOffTimeout?.cancel()
+        let parsed = Self.keys(in: cutOff + bytes[..<n])
+        cutOff = parsed.rest
+        handle(parsed.keys)
+        guard !cutOff.isEmpty else { return }
+        // the rest of a sequence comes within a moment; a lone escape is the Escape key
+        let timeout = DispatchWorkItem { [unowned self] in
+            let lone = self.cutOff == [0x1b]
+            self.cutOff = []
+            self.handle([lone ? Keystroke(key: "Escape") : nil])
+        }
+        cutOffTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: timeout)
+    }
+
+    private func handle(_ keys: [Keystroke?]) {
+        for key in Self.collapsingRepeats(keys) {
             guard let key else {
                 viewer.endPrefix()
                 continue
@@ -120,29 +139,34 @@ final class TerminalUI: ViewerUI {
 
     // The keys in a burst of terminal input, named as on X11: printable text as typed, control
     // bytes as C-letter, the usual escape sequences by keysym name, nil for a key with no name.
-    // An escape that ends the burst is the Escape key.
+    // An escape sequence the burst ends inside comes back as rest, to join the next burst.
     // shortcut: C-m and C-[ send the bytes of Return and Escape, so those two bindings need the
     // kitty keyboard protocol, which the viewer does not turn on
-    static func keys(in bytes: [UInt8]) -> [Keystroke?] {
+    static func keys(in bytes: [UInt8]) -> (keys: [Keystroke?], rest: [UInt8]) {
         var keys: [Keystroke?] = []
         var i = 0
         while i < bytes.count {
             let b = bytes[i]
-            i += 1
-            if b == 0x1b, i < bytes.count, bytes[i] == 0x5b || bytes[i] == 0x4f { // ESC [ or ESC O
-                var end = i + 1
+            if b == 0x1b {
+                guard i + 1 < bytes.count else { return (keys, [b]) } // Escape, or a sequence's start
+                guard bytes[i + 1] == 0x5b || bytes[i + 1] == 0x4f else { // not ESC [ or ESC O
+                    keys.append(Keystroke(key: "Escape")) // as Alt sends it before the key
+                    i += 1
+                    continue
+                }
+                var end = i + 2
                 while end < bytes.count, !(0x40...0x7e).contains(bytes[end]) { end += 1 }
-                guard end < bytes.count else { break } // cut off at the end of the burst
-                let params = String(decoding: bytes[(i + 1)..<end], as: UTF8.self).split(separator: ";").map(String.init)
+                guard end < bytes.count else { return (keys, Array(bytes[i...])) }
+                let params = String(decoding: bytes[(i + 2)..<end], as: UTF8.self).split(separator: ";").map(String.init)
                 // the second parameter is 1 plus the modifier bits, 4 being Ctrl: ESC [1;5A is C-Up
                 let ctrl = params.count > 1 && ((Int(params[1]) ?? 1) - 1) & 4 != 0
-                keys.append(sequenceName(bytes[end], params.first, ss3: bytes[i] == 0x4f)
+                keys.append(sequenceName(bytes[end], params.first, ss3: bytes[i + 1] == 0x4f)
                     .map { Keystroke(key: $0, ctrl: ctrl) })
                 i = end + 1
                 continue
             }
+            i += 1
             switch b {
-            case 0x1b: keys.append(Keystroke(key: "Escape"))
             case 0x0d: keys.append(Keystroke(key: "Return"))
             case 0x09: keys.append(Keystroke(key: "Tab"))
             case 0x7f: keys.append(Keystroke(key: "BackSpace"))
@@ -155,7 +179,7 @@ final class TerminalUI: ViewerUI {
             default: keys.append(nil) // another control byte, or a character that is not ASCII
             }
         }
-        return keys
+        return (keys, [])
     }
 
     private static func sequenceName(_ final: UInt8, _ first: String?, ss3: Bool) -> String? {
@@ -294,8 +318,16 @@ final class TerminalUI: ViewerUI {
         let status = viewer.statusText
         let room = max(0, cols - 2)
         let right = Viewer.fittedStatus(status.right, room: CGFloat(room)) { CGFloat($0.count) }
-        let left = ImlibRenderer.truncatedHead(viewer.errorText ?? status.left, width: room - right.count - 1) { $0.count }
+        let name = Self.printable(viewer.errorText ?? status.left)
+        let left = ImlibRenderer.truncatedHead(name, width: room - right.count - 1) { $0.count }
         return " \(left)\(String(repeating: " ", count: max(0, room - left.count - right.count)))\(right) "
+    }
+
+    // a file name may hold control characters, which the terminal would run as commands
+    static func printable(_ s: String) -> String {
+        var shown = String.UnicodeScalarView()
+        for c in s.unicodeScalars { shown.append(c.value < 0x20 || (0x7f...0x9f).contains(c.value) ? "?" : c) }
+        return String(shown)
     }
 
     private static func writeAll(_ fd: Int32, _ bytes: [UInt8]) {

@@ -201,13 +201,21 @@ struct RegressionChecks {
         assert(cut == "…efgh" && ImlibRenderer.truncatedHead("abc", width: 5) { $0.count } == "abc",
                "long names lose their start: \(cut)")
 
-        let typed = TerminalUI.keys(in: Array("j\u{1b}[A\u{1b}[1;5D\u{18}\r\u{7f}\u{1b}[3~\u{1b}OP\u{0}\u{e9}\u{1b}".utf8))
+        let typed = TerminalUI.keys(in: Array("j\u{1b}[A\u{1b}[1;5D\u{18}\r\u{7f}\u{1b}[3~\u{1b}OP\u{0}\u{e9}\u{1b}j".utf8))
         let named: [Keystroke?] = [
             Keystroke(key: "j"), Keystroke(key: "Up"), Keystroke(key: "Left", ctrl: true), Keystroke(key: "x", ctrl: true),
             Keystroke(key: "Return"), Keystroke(key: "BackSpace"), Keystroke(key: "Delete"), Keystroke(key: "F1"),
-            Keystroke(key: " ", ctrl: true), nil, Keystroke(key: "Escape"),
+            Keystroke(key: " ", ctrl: true), nil, Keystroke(key: "Escape"), Keystroke(key: "j"),
         ]
-        assert(typed == named, "terminal bytes arrive as the keys X11 names: \(typed)")
+        assert(typed.keys == named && typed.rest.isEmpty, "terminal bytes arrive as the keys X11 names: \(typed)")
+        // Left cut in two between reads, where its last byte alone would be D, which drops the image
+        let cut = TerminalUI.keys(in: Array("k\u{1b}[".utf8))
+        let joined = TerminalUI.keys(in: cut.rest + Array("D".utf8))
+        assert(cut.keys == [Keystroke(key: "k")] && joined.keys == [Keystroke(key: "Left")] && joined.rest.isEmpty,
+               "a sequence a read cuts off joins the next read: \(cut) \(joined)")
+        assert(TerminalUI.keys(in: [0x1b]).rest == [0x1b], "a lone escape waits to tell Escape from a sequence")
+        assert(TerminalUI.printable("a\u{1b}]52;c;eA==\u{7}b\u{9b}.png") == "a?]52;c;eA==?b?.png",
+               "control characters in a name never reach the terminal")
         let held = TerminalUI.collapsingRepeats([Keystroke?](repeating: Keystroke(key: "j"), count: 5)
             + [Keystroke(key: "k"), Keystroke(key: "k")])
         assert(held == [Keystroke(key: "j"), Keystroke(key: "k"), Keystroke(key: "k")],
