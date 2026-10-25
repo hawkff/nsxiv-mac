@@ -141,10 +141,12 @@ picture() {
             }
         }' "$out" >"$pics/sent"
     read -r kind w h data <"$pics/sent" || fail "the viewer sent no image $1"
+    # with an alpha channel, opaque where the image came without one, which ImageMagick's .a
+    # would read as one of the colors
     if [ "$kind" != png ]; then
-        magick -size "${w}x$h" -depth 8 "$kind:$(echo "$data" | base64 -d)" "$pics/image-$1.png"
+        magick -size "${w}x$h" -depth 8 "$kind:$(echo "$data" | base64 -d)" -alpha set "$pics/image-$1.png"
     else
-        echo "$w" | base64 -d >"$pics/image-$1.png"
+        echo "$w" | base64 -d | magick png:- -alpha set "$pics/image-$1.png"
     fi
 }
 # pixel x,y of image $1 as r,g,b,a
