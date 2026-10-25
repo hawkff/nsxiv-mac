@@ -83,13 +83,16 @@ key A
 shot 4-checkerboard
 key j
 shot 5-animated
-# the frames show red, lime and blue for 0.2 s each, so screenshots over a second differ
-for n in 1 2 3 4; do
+# the frames show red, lime and blue for 0.2 s each, so over a second the middle of the image,
+# above the status bar, takes more than one color; sway counts logical pixels, grim physical ones
+at=$(swaymsg -t get_tree | jq -r '.. | objects | select(.app_id == "nsxiv-mac") |
+    "\((.rect.x + .rect.width / 2) * 1.5 | floor),\((.rect.y + .rect.height / 3) * 1.5 | floor)"')
+colors=$(for n in 1 2 3 4; do
     sleep 0.25
     grim "$pics/frame-$n.png"
-done
-[ "$(md5sum "$pics"/frame-*.png | cut -d' ' -f1 | sort -u | wc -l)" -ge 2 ] ||
-    { echo "the animation does not play" >&2; exit 1; }
+    magick "$pics/frame-$n.png" -format "%[hex:p{$at}]\n" info:
+done | sort -u | wc -l)
+[ "$colors" -ge 2 ] || { echo "the animation does not play at $at" >&2; exit 1; }
 key f
 shot 6-fullscreen
 expect_fullscreen 1

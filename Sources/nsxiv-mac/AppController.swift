@@ -292,10 +292,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, Vi
             }
             return true
         }
-        // cmd shortcuts pass through to the menu (cmd-q etc.)
-        guard !event.modifierFlags.contains(.command) else { return false }
-        guard let key = Self.keyName(event) else {
-            viewer.unnamedKey() // Tab, Home or F1 after C-x
+        // cmd shortcuts pass through to the menu (cmd-q etc.); they and keys without a name, as Tab
+        // or F1, still end a C-x prefix
+        guard !event.modifierFlags.contains(.command), let key = Self.keyName(event) else {
+            viewer.endPrefix()
             return false
         }
         // a held key outruns large decodes; a repeat that waited in the queue is dropped

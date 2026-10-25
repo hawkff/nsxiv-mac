@@ -144,15 +144,12 @@ final class ImlibRenderer {
     private static func compose(_ path: String, _ first: Imlib_Frame_Info)
         -> (frames: [Imlib_Image], delays: [TimeInterval])? {
         let w = first.canvas_w, h = first.canvas_h
-        guard w > 0, h > 0 else { return nil }
+        guard w > 0, h > 0, let blank = imlib_create_image(w, h) else { return nil }
         // shortcut: every frame stays composed in memory, so an animation needing more than 1 GiB
-        // shows as a still; decode frames as they show, as ImageLoader does on macOS, if such
-        // files matter
-        guard Double(first.frame_count) * Double(w) * Double(h) * 4 <= Double(1 << 30) else {
-            warn("\(path): too large to animate, showing its first frame")
-            return nil
-        }
-        guard let blank = imlib_create_image(w, h) else { return nil }
+        // shows its first frame on its canvas as a still; decode frames as they show, as
+        // ImageLoader does on macOS, if such files matter
+        let fits = Double(first.frame_count) * Double(w) * Double(h) * 4 <= Double(1 << 30)
+        if !fits { warn("\(path): too large to animate, showing its first frame") }
         imlib_context_set_image(blank)
         clear(0, 0, w, h)
         imlib_context_set_anti_alias(0)
@@ -162,7 +159,7 @@ final class ImlibRenderer {
         var delays: [TimeInterval] = []
         var previous = Imlib_Frame_Info() // the last frame's disposal and area
         var undo: Imlib_Image? // the canvas before the last frame, kept when that frame asks to be undone
-        for n in 1...first.frame_count {
+        for n in 1...(fits ? first.frame_count : 1) {
             guard let raw = imlib_load_image_frame(path, n) else { break }
             imlib_context_set_image(raw)
             var info = Imlib_Frame_Info()
@@ -202,7 +199,8 @@ final class ImlibRenderer {
             imlib_context_set_image(image)
             imlib_free_image()
         }
-        guard frames.count > 1 else {
+        // a file that promised more frames than it had stays the raw still
+        guard frames.count > 1 || !fits, !frames.isEmpty else {
             for frame in frames {
                 imlib_context_set_image(frame)
                 imlib_free_image()
