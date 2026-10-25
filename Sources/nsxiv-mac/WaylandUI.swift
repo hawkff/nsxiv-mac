@@ -16,8 +16,9 @@ final class WaylandUI: ViewerUI {
     private var shm: OpaquePointer?
     private var wmBase: OpaquePointer?
     private var seat: OpaquePointer? // the seat input comes from
-    private var seats: [UInt32: (seat: OpaquePointer, capabilities: UInt32)] = [:] // every seat, by global name
-    private var seatVersion: UInt32 = 0
+    // every seat by global name, with the version bound and its devices
+    private var seats: [UInt32: (seat: OpaquePointer, version: UInt32, capabilities: UInt32)] = [:]
+    private var seatVersion: UInt32 { seats.values.first { $0.seat == seat }?.version ?? 0 }
     private var decorations: OpaquePointer?
     private var csd = false // no server-side decorations, as on GNOME: the window draws a title bar
     private var fractionalScaling: OpaquePointer?
@@ -171,8 +172,7 @@ final class WaylandUI: ViewerUI {
         case "wl_compositor": compositor = proxy
         case "wl_shm": shm = proxy
         case "wl_seat":
-            seats[name] = (proxy, 0)
-            seatVersion = min(version, newestVersion)
+            seats[name] = (proxy, min(version, newestVersion), 0)
             wl_seat_add_listener(proxy, Self.seatListener, data)
         case "wl_output":
             outputs[proxy] = Output()
@@ -196,7 +196,7 @@ final class WaylandUI: ViewerUI {
                 seat = nil
             }
             seats[name] = nil
-            if seatVersion >= 5 { wl_seat_release(gone.seat) } else { wl_seat_destroy(gone.seat) }
+            if gone.version >= 5 { wl_seat_release(gone.seat) } else { wl_seat_destroy(gone.seat) }
             if seat == nil, let next = seats.values.first(where: { $0.capabilities & Self.input != 0 }) {
                 seatCapabilities(next.seat, next.capabilities)
             }
