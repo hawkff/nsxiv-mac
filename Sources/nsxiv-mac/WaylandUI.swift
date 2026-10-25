@@ -253,10 +253,10 @@ final class WaylandUI: ViewerUI {
         XDG_TOPLEVEL_STATE_TILED_TOP, XDG_TOPLEVEL_STATE_TILED_BOTTOM,
     ].map(\.rawValue))
 
-    // COSMIC marks floating windows as tiled too when it rounds their corners itself; a tiled
-    // one there still gets sizes the viewer did not pick, which bind. Hyprland marks every
-    // window as tiled and maximized, and keeps the size it gave a window that resizes itself,
-    // so there every size binds.
+    // COSMIC marks floating windows as tiled too when it rounds their corners itself, so there
+    // only its size tells a tile: one the viewer did not pick binds, as the shortcut below
+    // explains. Hyprland marks every window as tiled and maximized, and keeps the size it gave
+    // a window that resizes itself, so there every size binds.
     private var bindingStates: Set<UInt32> {
         guard desktops.contains("cosmic") else { return Self.heldStates }
         return [XDG_TOPLEVEL_STATE_MAXIMIZED.rawValue, XDG_TOPLEVEL_STATE_FULLSCREEN.rawValue,

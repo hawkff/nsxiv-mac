@@ -57,21 +57,24 @@ export NIRI_SOCKET
 
 WAYLAND_DISPLAY=$nested "$bin" -S 4 "$pics" &
 pid=$!
-# the viewer names its window after the image it shows
-shown() { niri msg --json windows | jq -e --argjson pid "$pid" 'any(.[]; .pid == $pid and .title == "2-large.png")' >/dev/null; }
-for _ in $(seq 100); do shown && break; sleep 0.1; done
-shown || { echo "the viewer did not show the large image" >&2; exit 1; }
-sleep 1 # time to grow
+# the viewer names its window after the image it shows; wait for the large one in the grown
+# window
+window=
+for _ in $(seq 100); do
+    window=$(niri msg --json windows | jq -c --argjson pid "$pid" '.[] | select(.pid == $pid) | .layout as $l |
+        {title, floating: .is_floating, x: $l.tile_pos_in_workspace_view[0], y: $l.tile_pos_in_workspace_view[1],
+         width: $l.tile_size[0], height: $l.tile_size[1]}')
+    [ "$(echo "$window" | jq '.title == "2-large.png" and .width > 400')" = true ] && break
+    sleep 0.1
+done
 kill -0 "$pid"
 output=$(niri msg --json outputs | jq -c '[.[] | .logical][0] | {width, height}')
-window=$(niri msg --json windows | jq -c --argjson pid "$pid" '.[] | select(.pid == $pid) | .layout as $l |
-    {floating: .is_floating, x: $l.tile_pos_in_workspace_view[0], y: $l.tile_pos_in_workspace_view[1],
-     width: $l.tile_size[0], height: $l.tile_size[1]}')
 echo "output: $output; window: $window"
 [ -n "$window" ] || { echo "niri lists no viewer window" >&2; exit 1; }
 # niri reports logical pixels, which may be fractional
 problem=$(jq -rn --argjson o "$output" --argjson w "$window" '
-    if ($w.floating | not) then "the window is not floating"
+    if $w.title != "2-large.png" then "the viewer did not show the large image"
+    elif ($w.floating | not) then "the window is not floating"
     elif $w.width <= 400 then "the window did not grow into the room it had"
     elif $w.x < 0 or $w.y < 0 or $w.x + $w.width > $o.width or $w.y + $w.height > $o.height
     then "the grown window ran past the output"
