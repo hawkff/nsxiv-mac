@@ -610,6 +610,8 @@ final class TerminalUI: ViewerUI {
                 }
                 return
             }
+            // in a file, a frame with transparency takes 4 bytes a pixel, which must fit before it is written
+            guard imageFiles == nil || opaque || reserved + 4 * pixels.width * pixels.height <= Self.keptBudget else { return }
             let id = newImageID()
             // a frame that went as PNG, as when the disk is full, takes more room than counted
             guard let sent = transmit(canvas, id: id, place: false, opaque: opaque), reserved + sent.bytes <= Self.keptBudget
