@@ -4,7 +4,8 @@ A Swift rewrite of [nsxiv](https://github.com/nsxiv/nsxiv)'s keyboard-driven
 image viewing. On macOS it runs on AppKit, ImageIO, and Vision with no
 third-party dependencies and needs macOS 13 or later. On Linux it opens a
 Wayland window, or an X11 one outside a Wayland session, and draws with Imlib2,
-the library nsxiv uses.
+the library nsxiv uses. With no display, as over SSH on a headless machine, it
+shows the images in the terminal.
 
 ## Features
 
@@ -65,6 +66,13 @@ niri asks windows to draw their own title bar unless its config sets
 On KDE the viewer loads a small KWin script over D-Bus, through `dbus-send`, to
 keep its window on screen as it grows. The script watches only that viewer's
 window and unloads itself when the window closes.
+
+With no display, the viewer runs in the terminal instead.
+[chafa](https://hpjansson.org/chafa/) draws the image as colored text symbols,
+which pass through tmux and other multiplexers too. The status bar takes the
+last line. Install chafa for this (`apt install chafa`, `pacman -S chafa`). The
+keys stay the same, and `C-c` quits too. `C-m` arrives as `Return` and `C-[` as
+`Escape`, because terminals send the same bytes for them.
 
 ## Usage
 
@@ -175,7 +183,7 @@ directory, starting at that file. For yazi, register it as an opener:
 ```toml
 [opener]
 nsxiv = [
-  { run = 'nsxiv-rifle "$@"', desc = "nsxiv-mac", for = "unix" },
+  { run = 'nsxiv-rifle %s', desc = "nsxiv-mac", for = "unix" },
 ]
 
 [open]
@@ -183,6 +191,9 @@ prepend_rules = [
   { mime = "image/*", use = "nsxiv" },
 ]
 ```
+
+With no display, the viewer needs yazi's terminal: add `block = true` to the
+opener, and yazi waits until you quit the viewer.
 
 ## Configuration
 
