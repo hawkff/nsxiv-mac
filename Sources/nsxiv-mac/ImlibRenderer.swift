@@ -29,6 +29,9 @@ final class ImlibRenderer {
 
     private typealias RGB = (r: Int32, g: Int32, b: Int32)
     private let background = ImlibRenderer.rgb(Config.background)
+    // in a terminal, the canvas outside the image stays transparent, for the terminal's own
+    // background to show there
+    var clearBackground = false
     private let foreground = ImlibRenderer.rgb(Config.foreground)
     private let barBackground = ImlibRenderer.rgb(Config.barBackground)
     private let selection = ImlibRenderer.rgb(Config.selectionColor)
@@ -316,20 +319,26 @@ final class ImlibRenderer {
     // MARK: - drawing
 
     // draws the whole window into canvas, which is width by height pixels
-    func render(into canvas: Imlib_Image, width: Int, height: Int, scale: Double) {
+    // the view drawn into canvas, and whether every pixel came out opaque
+    @discardableResult
+    func render(into canvas: Imlib_Image, width: Int, height: Int, scale: Double) -> Bool {
         imlib_context_set_image(canvas)
         imlib_image_set_has_alpha(0)
         imlib_context_set_color_modifier(nil)
         imlib_context_set_operation(IMLIB_OP_COPY)
-        fill(background, 0, 0, width, height)
+        // the text of what went wrong keeps the background it is drawn for
+        let clear = clearBackground && (viewer.thumbnailMode || viewer.image != nil)
+        if clear { Self.clear(0, 0, Int32(width), Int32(height)) } else { fill(background, 0, 0, width, height) }
         let barH = drawsBar && viewer.barVisible ? Int((Double(barHeight) * scale).rounded()) : 0
         let mainH = max(0, height - barH)
+        var covered = false
         if viewer.thumbnailMode {
             renderGrid(canvas, scale: scale)
         } else {
-            renderImage(canvas, width: width, height: mainH, scale: scale)
+            covered = renderImage(canvas, width: width, height: mainH, scale: scale)
         }
         if barH > 0 { renderBar(canvas, y: mainH, width: width, height: barH, scale: scale) }
+        return covered || !clear
     }
 
     private func fill(_ color: RGB, _ x: Int, _ y: Int, _ w: Int, _ h: Int) {
@@ -338,7 +347,7 @@ final class ImlibRenderer {
         imlib_image_fill_rectangle(Int32(x), Int32(y), Int32(max(0, w)), Int32(max(0, h)))
     }
 
-    private func renderImage(_ canvas: Imlib_Image, width: Int, height: Int, scale: Double) {
+    private func renderImage(_ canvas: Imlib_Image, width: Int, height: Int, scale: Double) -> Bool {
         drawImage(shown, view: viewer.viewport, errorText: viewer.errorText, into: canvas, width: width, height: height,
                   scale: scale)
     }
@@ -366,26 +375,29 @@ final class ImlibRenderer {
 
     // the image view of image, unturned, with the current gamma and contrast, which a change made
     // while the terminal showed a frame it kept never gave this renderer
+    @discardableResult
     func drawStill(_ image: Imlib_Image, view: Viewport, into canvas: Imlib_Image, width: Int, height: Int,
-                   scale: Double) {
+                   scale: Double) -> Bool {
         setColors()
         imlib_context_set_image(canvas)
         imlib_image_set_has_alpha(0)
         imlib_context_set_color_modifier(nil)
         imlib_context_set_operation(IMLIB_OP_COPY)
-        fill(background, 0, 0, width, height)
-        drawImage(image, view: view, errorText: nil, into: canvas, width: width, height: height, scale: scale)
+        if clearBackground { Self.clear(0, 0, Int32(width), Int32(height)) } else { fill(background, 0, 0, width, height) }
+        return drawImage(image, view: view, errorText: nil, into: canvas, width: width, height: height, scale: scale)
+            || !clearBackground
     }
 
+    // the image view, or what went wrong, and whether opaque pixels of the image cover the canvas
     private func drawImage(_ image: Imlib_Image?, view: Viewport, errorText: String?, into canvas: Imlib_Image,
-                           width: Int, height: Int, scale: Double) {
+                           width: Int, height: Int, scale: Double) -> Bool {
         guard let shown = image else {
             if let text = errorText, let face = loadFont(scale: scale) {
                 imlib_context_set_font(face)
                 let size = textSize(text)
                 drawText(text, x: (width - size.width) / 2, y: (height - size.height) / 2)
             }
-            return
+            return false
         }
         let r = view.imageRect
         let s = CGFloat(scale), w = CGFloat(width), h = CGFloat(height)
@@ -396,7 +408,7 @@ final class ImlibRenderer {
         // only the source pixels that land in the window, in whole pixels so zoom stays steady
         let sx0 = max(0, (-dx / z).rounded(.down)), sy0 = max(0, (-dy / z).rounded(.down))
         let sx1 = min(iw, ((w - dx) / z).rounded(.up)), sy1 = min(ih, ((h - dy) / z).rounded(.up))
-        guard sx1 > sx0, sy1 > sy0 else { return }
+        guard sx1 > sx0, sy1 > sy0 else { return false }
         let x = Int32((dx + sx0 * z).rounded()), y = Int32((dy + sy0 * z).rounded())
         let dw = Int32(max(1, ((sx1 - sx0) * z).rounded())), dh = Int32(max(1, ((sy1 - sy0) * z).rounded()))
         imlib_context_set_image(canvas)
@@ -409,6 +421,7 @@ final class ImlibRenderer {
         imlib_blend_image_onto_image(shown, 0, Int32(sx0), Int32(sy0), Int32(sx1 - sx0), Int32(sy1 - sy0),
                                      x, y, dw, dh)
         imlib_context_set_color_modifier(nil)
+        return (!alpha || view.alphaLayer) && x <= 0 && y <= 0 && Int(x + dw) >= width && Int(y + dh) >= height
     }
 
     // the 12 pt white and gray squares the macOS side draws under transparent pixels
