@@ -64,6 +64,12 @@ final class TerminalUI: ViewerUI {
     private var cutOff: [UInt8] = [] // an escape sequence the last read ended inside
     private var cutOffTimeout: DispatchWorkItem?
     private let probeInput: [UInt8] // the probe's answers, which the key parser skips, and keys typed meanwhile
+    // herdr sends an image on to its client, across SSH for a remote one, only once the image is
+    // placed, which for a frame of 2560x1600 takes over a second there: a frame sent ahead also gets
+    // a placement of one cell, under the background of the status bar's last cell, so it is on the
+    // client by the time it shows
+    private let placeAhead = ProcessInfo.processInfo.environment["TERM_PROGRAM"] == "herdr"
+    private var placedAhead = false // hidden placements under the bar, which hiding the bar would show
 
     // what atexit puts back
     private static var saved: (tty: Int32, mode: termios, frame: String, kitty: Bool, imageFiles: String?)?
@@ -342,8 +348,10 @@ final class TerminalUI: ViewerUI {
     // the terminal, decoded to RGBA. A canvas the image does not cover goes with its alpha, so the
     // terminal's background shows around the image. With place, it also shows at the top left,
     // scaled to the image rows, as placement 1.
-    private func transmit(_ canvas: Imlib_Image, id: UInt32, place: Bool, opaque: Bool) -> (command: [UInt8], bytes: Int)? {
-        let keys = place ? "a=T,\(placement(id))" : "a=t,i=\(id)"
+    private func transmit(_ canvas: Imlib_Image, id: UInt32, place: Bool, opaque: Bool,
+                          hidden: Bool = false) -> (command: [UInt8], bytes: Int)? {
+        // hidden: placement 2, one cell at the cursor below cell backgrounds
+        let keys = place ? "a=T,\(placement(id))" : hidden ? "a=T,i=\(id),p=2,c=1,r=1,z=-1073741825,C=1" : "a=t,i=\(id)"
         imlib_context_set_image(canvas)
         let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
         if let imageFiles, let path = Self.pixelFile(of: canvas, at: "\(imageFiles)/\(id)", alpha: !opaque) {
@@ -614,11 +622,16 @@ final class TerminalUI: ViewerUI {
             guard imageFiles == nil || opaque || reserved + 4 * pixels.width * pixels.height <= Self.keptBudget else { return }
             let id = newImageID()
             // a frame that went as PNG, as when the disk is full, takes more room than counted
-            guard let sent = transmit(canvas, id: id, place: false, opaque: opaque), reserved + sent.bytes <= Self.keptBudget
+            // under the status bar's last cell, whose background hides it
+            let hidden = placeAhead && !Self.tmux && viewer.barVisible && rows > imageRows
+            guard let sent = transmit(canvas, id: id, place: false, opaque: opaque, hidden: hidden),
+                  reserved + sent.bytes <= Self.keptBudget
             else { return }
             if let stamp { loaded[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
             keep(key, id: id, bytes: sent.bytes)
-            Self.writeAll(tty, sent.command + trimKept(sparing: key))
+            let cell = hidden ? Array("\u{1b}[\(rows);\(cols)H".utf8) : []
+            placedAhead = placedAhead || hidden
+            Self.writeAll(tty, cell + sent.command + (hidden ? Array("\u{1b}[H".utf8) : []) + trimKept(sparing: key))
             schedulePrefetch()
             return
         }
@@ -962,6 +975,10 @@ final class TerminalUI: ViewerUI {
             }
         }
         if viewer.barVisible, rows > 0 { out += Array("\u{1b}[\(rows);1H\u{1b}[0;7m\(statusLine())\u{1b}[0m".utf8) }
+        if placedAhead, !viewer.barVisible { // without the bar's background over them, they would show
+            placedAhead = false
+            out += Array(kept.values.map { Self.command("a=d,d=i,i=\($0.id),p=2,q=2") }.joined().utf8)
+        }
         out += Array("\u{1b}[H\u{1b}[?2026l".utf8) + after // home, where a stray warning cannot scroll the screen
         Self.writeAll(tty, out)
         if !imageDirty { schedulePrefetch() }
