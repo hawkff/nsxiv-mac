@@ -129,6 +129,11 @@ final class ImlibRenderer {
                 }
             }
         }
+        setColors()
+    }
+
+    // the viewer's gamma and contrast, for what draws next
+    private func setColors() {
         imlib_context_set_color_modifier(colorModifier)
         imlib_reset_color_modifier()
         if viewer.gamma != 0 { imlib_modify_color_modifier_gamma(viewer.gammaValue) }
@@ -359,9 +364,11 @@ final class ImlibRenderer {
         imlib_free_image()
     }
 
-    // the image view of image, unturned, with the current gamma and contrast
+    // the image view of image, unturned, with the current gamma and contrast, which a change made
+    // while the terminal showed a frame it kept never gave this renderer
     func drawStill(_ image: Imlib_Image, view: Viewport, into canvas: Imlib_Image, width: Int, height: Int,
                    scale: Double) {
+        setColors()
         imlib_context_set_image(canvas)
         imlib_image_set_has_alpha(0)
         imlib_context_set_color_modifier(nil)

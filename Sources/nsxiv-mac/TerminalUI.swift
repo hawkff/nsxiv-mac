@@ -37,15 +37,15 @@ final class TerminalUI: ViewerUI {
     }
     private var kept: [FrameKey: (id: UInt32, bytes: Int)] = [:] // frames the terminal holds
     private var keptOrder: [FrameKey] = [] // least recently shown first
-    private var shownImage: UInt32 = 0 // the kitty image on screen; 0 when other programs may have left some
+    private var shownImage: UInt32 = 0 // the kitty image on screen, 0 for none
     private var shownKey: FrameKey?
     private var lastImageID: UInt32 = 0
     private var lastIndex = 0 // of the image shown, for the way the viewer is going
     private var direction = 1
     private var prefetch: DispatchWorkItem?
     private var symbols: [FrameKey: [UInt8]] = [:] // chafa's last frames
-    // stills shown or sent ahead: what loading them gave, and their files' times then
-    private var stills: [String: (info: ImageInfo, stamp: [Int])] = [:]
+    // the files loaded or sent ahead: what loading them gave, and their times just before
+    private var loaded: [String: (info: ImageInfo, stamp: [Int])] = [:]
     private var rendererPath: String? // the file the renderer holds; another loads once it must draw
     private var redrawDue: DispatchTime?
     private var sources: [DispatchSourceProtocol] = []
@@ -255,12 +255,24 @@ final class TerminalUI: ViewerUI {
         return out
     }
 
-    // The canvas sent to the terminal as image id: as raw RGB in a file the terminal reads and
-    // deletes itself, or as PNG through the terminal. With place, it also shows at the top left,
-    // scaled to the image rows, as placement 1.
-    private func transmit(_ canvas: Imlib_Image, id: UInt32, place: Bool) -> [UInt8]? {
+    // The canvas sent to the terminal as image id, with the bytes the terminal stores for it: raw
+    // RGB in a file the terminal reads and deletes itself, kept as it came, or PNG through the
+    // terminal, decoded to RGBA. With place, it also shows at the top left, scaled to the image
+    // rows, as placement 1.
+    private func transmit(_ canvas: Imlib_Image, id: UInt32, place: Bool) -> (command: [UInt8], bytes: Int)? {
         let keys = place ? "a=T,i=\(id),p=1,C=1,c=\(cols),r=\(imageRows)" : "a=t,i=\(id)"
-        guard let imageFiles else { return Self.png(of: canvas).map { Self.kittyImage($0, keys: keys) } }
+        imlib_context_set_image(canvas)
+        let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
+        if let imageFiles, let path = Self.rgbFile(of: canvas, at: "\(imageFiles)/\(id)") {
+            let file = Data(path.utf8).base64EncodedString()
+            return (Array("\u{1b}_G\(keys),f=24,s=\(width),v=\(height),t=t,q=2;\(file)\u{1b}\\".utf8), 3 * width * height)
+        }
+        return Self.png(of: canvas).map { (Self.kittyImage($0, keys: keys), 4 * width * height) }
+    }
+
+    // the canvas as raw RGB in the file at path; nil when the file could not take it whole, as on a
+    // full disk, which the terminal would answer only with an error the viewer does not ask for
+    private static func rgbFile(of canvas: Imlib_Image, at path: String) -> String? {
         imlib_context_set_image(canvas)
         let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
         guard let argb = imlib_image_get_data_for_reading_only() else { return nil }
@@ -273,12 +285,12 @@ final class TerminalUI: ViewerUI {
             }
             count = 3 * width * height
         }
-        let path = "\(imageFiles)/\(id)"
         let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return nil }
-        Self.writeAll(fd, rgb)
+        let whole = writeAll(fd, rgb)
         close(fd)
-        return Array("\u{1b}_G\(keys),f=24,s=\(width),v=\(height),t=t,q=2;\(Data(path.utf8).base64EncodedString())\u{1b}\\".utf8)
+        if !whole { unlink(path) }
+        return whole ? path : nil
     }
 
     private static func delete(_ id: UInt32) -> String { "\u{1b}_Ga=d,d=I,i=\(id),q=2\u{1b}\\" }
@@ -292,17 +304,23 @@ final class TerminalUI: ViewerUI {
         return lastImageID
     }
 
-    // The terminal holds what the frames the viewer kept take as RGBA: herdr keeps 64 MiB a pane.
-    // A kept frame shows again by placement alone; the one it replaces loses its placement only.
+    // The terminal holds the frames the viewer kept, within what herdr keeps a pane, 64 MiB. A
+    // kept frame shows again by placement alone; the one it replaces loses its placement only.
     private static let keptBudget = 56 << 20
 
-    private func keep(_ key: FrameKey, id: UInt32, bytes: Int) -> [UInt8] {
+    // a frame the terminal holds, now the most recently shown
+    private func keep(_ key: FrameKey, id: UInt32, bytes: Int) {
         kept[key] = (id, bytes)
         keptOrder.removeAll { $0 == key }
         keptOrder.append(key)
+    }
+
+    // the frames past the budget out of the terminal, least recently shown first, all but the
+    // shown one and spared, one just sent ahead
+    private func trimKept(sparing spared: FrameKey? = nil) -> [UInt8] {
         var out = ""
         var total = kept.values.reduce(0) { $0 + $1.bytes }
-        while total > Self.keptBudget, let oldest = keptOrder.first(where: { $0 != key && $0 != shownKey }),
+        while total > Self.keptBudget, let oldest = keptOrder.first(where: { $0 != spared && $0 != shownKey }),
               let frame = kept.removeValue(forKey: oldest) {
             keptOrder.removeAll { $0 == oldest }
             total -= frame.bytes
@@ -314,27 +332,36 @@ final class TerminalUI: ViewerUI {
     // The view, from a kept frame or a new one, in place of what the screen shows: what is there
     // loses its placement once the new frame covers it, or goes entirely when it was not kept
     private func kittyFrame(_ key: FrameKey?) -> [UInt8]? {
-        var out = Array((shownImage == 0 ? Self.deleteImages : "").utf8) // what other programs left
+        // what other programs left, before the viewer sent any image of its own
+        var out = Array((shownImage == 0 && kept.isEmpty ? Self.deleteImages : "").utf8)
         let id: UInt32
         if let key, let frame = kept[key] {
             id = frame.id
-            keptOrder.removeAll { $0 == key }
-            keptOrder.append(key)
+            keep(key, id: id, bytes: frame.bytes)
             // q=1 leaves an answer when the terminal dropped the image, so it goes again
             out += Array("\u{1b}_Ga=p,i=\(id),p=1,C=1,q=1,c=\(cols),r=\(imageRows)\u{1b}\\".utf8)
         } else {
             id = newImageID()
             guard let canvas = drawCanvas(), let sent = transmit(canvas, id: id, place: true) else { return nil }
-            out += sent
-            if let key { out += keep(key, id: id, bytes: 4 * canvasPixels.width * canvasPixels.height) }
+            out += sent.command
+            if let key { keep(key, id: id, bytes: sent.bytes) }
         }
-        if shownImage != 0, shownImage != id {
-            let keptShown = kept.values.contains { $0.id == shownImage }
-            out += Array((keptShown ? "\u{1b}_Ga=d,d=i,i=\(shownImage),p=1,q=2\u{1b}\\" : Self.delete(shownImage)).utf8)
-        }
+        if shownImage != id { out += Array(hideShown().utf8) }
         shownImage = id
         shownKey = key
-        return out
+        return out + trimKept()
+    }
+
+    // the shown frame off the screen, a kept one with its pixels still in the terminal: d=A would
+    // free it, and kitty might free every frame sent ahead with it
+    private func hideShown() -> String {
+        defer {
+            shownImage = 0
+            shownKey = nil
+        }
+        guard shownImage != 0 else { return "" }
+        let keptShown = kept.values.contains { $0.id == shownImage }
+        return keptShown ? "\u{1b}_Ga=d,d=i,i=\(shownImage),p=1,q=2\u{1b}\\" : Self.delete(shownImage)
     }
 
     // The key of the current view, nil in the grid and without an image
@@ -367,24 +394,33 @@ final class TerminalUI: ViewerUI {
     private func prefetchNeighbor() {
         var ready = pollfd(fd: tty, events: Int16(POLLIN), revents: 0)
         guard !imageDirty, poll(&ready, 1, 0) == 0 else { return } // a key or a frame comes first
+        // the shown frame stays, and so does the neighbor before: one that would push it out waits,
+        // or the two would push each other out for as long as no key comes
+        var reserved = kept.values.first { $0.id == shownImage }?.bytes ?? 0
         for index in [viewer.current + direction, viewer.current - direction] where viewer.files.indices.contains(index) {
             let entry = viewer.files[index]
-            guard !kept.keys.contains(where: { $0.path == entry.path }), let next = renderer.peek(entry.url) else { continue }
+            if let frame = kept.first(where: { $0.key.path == entry.path }) {
+                reserved += frame.value.bytes
+                continue
+            }
+            let stamp = Self.stamp(entry.path)
+            guard let next = renderer.peek(entry.url) else { continue }
             defer { renderer.release(next.image) }
             guard next.size.width * next.size.height <= 25_000_000 else { continue }
-            if let stamp = Self.stamp(entry.path) { stills[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
             var view = viewer.viewport
             view.setImageSize(next.size, resetView: true) // as loading it will
             let pixels = framePixels(view, image: true)
-            let shownBytes = kept.values.first { $0.id == shownImage }?.bytes ?? 0
-            guard shownBytes + 4 * pixels.width * pixels.height <= Self.keptBudget else { return }
+            let bytes = (imageFiles == nil ? 4 : 3) * pixels.width * pixels.height // as transmit counts
+            guard reserved + bytes <= Self.keptBudget else { return }
             let key = key(path: entry.path, frame: 0, rotation: 0, flipH: false, flipV: false, view: view, pixels: pixels)
             guard let canvas = makeCanvas(pixels.width, pixels.height) else { return }
             renderer.drawStill(next.image, view: view, into: canvas, width: pixels.width, height: pixels.height,
                                scale: pixels.scale)
             let id = newImageID()
             guard let sent = transmit(canvas, id: id, place: false) else { return }
-            Self.writeAll(tty, sent + keep(key, id: id, bytes: 4 * pixels.width * pixels.height))
+            if let stamp { loaded[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
+            keep(key, id: id, bytes: sent.bytes)
+            Self.writeAll(tty, sent.command + trimKept(sparing: key))
             schedulePrefetch()
             return
         }
@@ -409,11 +445,16 @@ final class TerminalUI: ViewerUI {
         cutOff = parsed.rest
         handle(parsed.keys)
         guard !cutOff.isEmpty else { return }
-        // the rest of a sequence comes within a moment; a lone escape is the Escape key
+        // the rest of a sequence comes within a moment; a lone escape is the Escape key, and ESC _
+        // Alt and _
         let timeout = DispatchWorkItem { [unowned self] in
-            let lone = self.cutOff == [0x1b]
+            let rest = self.cutOff
             self.cutOff = []
-            self.handle([lone ? Keystroke(key: "Escape") : nil])
+            switch rest {
+            case [0x1b]: self.handle([Keystroke(key: "Escape")])
+            case [0x1b, 0x5f]: self.handle([Keystroke(key: "_")])
+            default: self.handle([nil])
+            }
         }
         cutOffTimeout = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: timeout)
@@ -443,12 +484,16 @@ final class TerminalUI: ViewerUI {
             if b == 0x1b {
                 guard i + 1 < bytes.count else { return (keys, [b]) } // Escape, or a sequence's start
                 let next = bytes[i + 1]
-                // ESC _ G starts a kitty graphics reply, up to ESC \; ESC _ alone is Alt and _
-                if next == 0x5f, i + 2 < bytes.count, bytes[i + 2] == 0x47 {
-                    guard let end = (i + 2..<bytes.count).first(where: { bytes[$0] == 0x5c && bytes[$0 - 1] == 0x1b })
-                    else { return (keys, Array(bytes[i...])) }
-                    i = end + 1
-                    continue
+                // ESC _ G starts a kitty graphics reply, up to ESC \; ESC _ alone is Alt and _, so a
+                // burst that ends after ESC _ leaves it to the next one
+                if next == 0x5f {
+                    guard i + 2 < bytes.count else { return (keys, Array(bytes[i...])) }
+                    if bytes[i + 2] == 0x47 {
+                        guard let end = (i + 2..<bytes.count).first(where: { bytes[$0] == 0x5c && bytes[$0 - 1] == 0x1b })
+                        else { return (keys, Array(bytes[i...])) }
+                        i = end + 1
+                        continue
+                    }
                 }
                 guard next == 0x5b || next == 0x4f else { // not ESC [ or ESC O
                     if (0x20...0x7e).contains(next) { // Alt and a key: the key, as on X11
@@ -533,23 +578,27 @@ final class TerminalUI: ViewerUI {
     // share costs a round trip a file: its file's times are compared off the main queue, and a
     // file that changed loads again
     func loadImage(_ url: URL) -> ImageInfo? {
-        if let still = stills[url.path], kept.keys.contains(where: { $0.path == url.path }) {
+        if let file = loaded[url.path], !file.info.isAnimated, kept.keys.contains(where: { $0.path == url.path }) {
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard Self.stamp(url.path) != still.stamp else { return }
+                guard Self.stamp(url.path) != file.stamp else { return }
                 DispatchQueue.main.async {
                     guard let self, self.viewer.currentEntry?.path == url.path else { return }
                     self.viewer.reloadCurrent()
                 }
             }
-            return still.info
+            return file.info
         }
         return loadNow(url)
     }
 
+    // a file that changed since its frames were drawn, as one rewritten while another showed,
+    // loads without them
     private func loadNow(_ url: URL) -> ImageInfo? {
+        let stamp = Self.stamp(url.path) // before the load, so a change during it shows next time
+        if loaded[url.path]?.stamp != stamp { forgetFiles([url.path]) }
         let info = renderer.loadImage(url)
         rendererPath = url.path
-        if let info, !info.isAnimated, let stamp = Self.stamp(url.path) { stills[url.path] = (info, stamp) }
+        loaded[url.path] = info.flatMap { info in stamp.map { (info, $0) } }
         return info
     }
 
@@ -605,7 +654,7 @@ final class TerminalUI: ViewerUI {
     // a file that changed loads anew, for the frames and for what loading it gave
     private func forgetFiles(_ paths: Set<String>) {
         forgetFrames { paths.contains($0.path) }
-        for path in paths { stills[path] = nil }
+        for path in paths { loaded[path] = nil }
         if let rendererPath, paths.contains(rendererPath) { self.rendererPath = nil }
     }
 
@@ -680,17 +729,14 @@ final class TerminalUI: ViewerUI {
             imageDirty = false
             // a frame that could not be drawn clears the screen, so no other image stays under this name
             if cols > 0, imageRows > 0 {
-                let drawn = kitty ? kittyFrame(currentKey()) : symbolRows(currentKey())
-                if drawn == nil { // the next redraw, even of the bar alone, tries again
-                    shownImage = 0
-                    shownKey = nil
+                if let drawn = kitty ? kittyFrame(currentKey()) : symbolRows(currentKey()) {
+                    out += drawn
+                } else { // the next redraw, even of the bar alone, tries again
                     imageDirty = true
+                    out += Array((hideShown() + "\u{1b}[2J").utf8)
                 }
-                out += drawn ?? Array("\(kitty ? Self.deleteImages : "")\u{1b}[2J".utf8)
-            } else if shownImage != 0 { // no row left for an image, as in a one-row terminal with the bar
-                out += Array(Self.deleteImages.utf8)
-                shownImage = 0
-                shownKey = nil
+            } else { // no row left for an image, as in a one-row terminal with the bar
+                out += Array(hideShown().utf8)
             }
         }
         if viewer.barVisible, rows > 0 { out += Array("\u{1b}[\(rows);1H\u{1b}[0;7m\(statusLine())\u{1b}[0m".utf8) }
@@ -701,10 +747,11 @@ final class TerminalUI: ViewerUI {
 
     // The pixels a frame of view takes: the terminal's own for a kitty image, 16 a row for chafa,
     // which needs no more for its symbols. A kitty terminal scales an image up as Imlib2 does,
-    // linearly, so an image shown larger than its pixels goes at those, which it scales itself.
+    // linearly, so an image shown larger than its pixels goes at those, which it scales itself;
+    // not over the checkerboard, whose squares would grow with it.
     private func framePixels(_ view: Viewport, image: Bool) -> (width: Int, height: Int, scale: Double) {
         var scale = kitty ? cell.height / 16 : 1
-        if kitty, image, view.antialias, view.zoom * scale > 1 { scale = 1 / view.zoom }
+        if kitty, image, view.antialias, !view.alphaLayer, view.zoom * scale > 1 { scale = 1 / view.zoom }
         return (max(1, Int((canvasSize.width * scale).rounded())), max(1, Int((canvasSize.height * scale).rounded())),
                 scale)
     }
@@ -816,14 +863,17 @@ final class TerminalUI: ViewerUI {
         return String(shown)
     }
 
-    private static func writeAll(_ fd: Int32, _ bytes: [UInt8]) {
+    // false when not all of bytes went, as to a terminal that went away or a full disk
+    @discardableResult
+    private static func writeAll(_ fd: Int32, _ bytes: [UInt8]) -> Bool {
         var done = 0
         while done < bytes.count {
             let n = bytes[done...].withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
             if n < 0, errno == EINTR { continue }
-            guard n > 0 else { return } // the terminal went away
+            guard n > 0 else { return false }
             done += n
         }
+        return true
     }
 
     // a program's output, waited for without a nested run loop; nil when it fails or is missing

@@ -90,6 +90,8 @@ jobs:
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty
       - name: Run in a terminal with no display that shows kitty graphics from the viewer's files
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty-files
+      - name: Run in a large terminal with kitty graphics, where two neighbors do not both fit
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty-budget
       - uses: actions/upload-artifact@v4
         if: always()
         with:
