@@ -257,7 +257,8 @@ final class TerminalUI: ViewerUI {
             if b == 0x1b {
                 guard i + 1 < bytes.count else { return (keys, [b]) } // Escape, or a sequence's start
                 let next = bytes[i + 1]
-                if next == 0x5f { // ESC _ starts a kitty graphics reply, which no key sends: up to ESC \
+                // ESC _ G starts a kitty graphics reply, up to ESC \; ESC _ alone is Alt and _
+                if next == 0x5f, i + 2 < bytes.count, bytes[i + 2] == 0x47 {
                     guard let end = (i + 2..<bytes.count).first(where: { bytes[$0] == 0x5c && bytes[$0 - 1] == 0x1b })
                     else { return (keys, Array(bytes[i...])) }
                     i = end + 1
