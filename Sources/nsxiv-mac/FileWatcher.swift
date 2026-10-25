@@ -13,8 +13,11 @@ final class FileWatcher {
         src.setEventHandler(handler: onChange)
         #else
         // watch the directory: an atomic save renames a new file over the old name;
-        // a symlink's target is the file that changes, as open() follows links on macOS
-        let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+        // a symlink's target is the file that changes, as open() follows links on macOS. Only a
+        // link needs resolving, which on a network share takes a round trip a path component.
+        var info = stat()
+        let link = lstat(path, &info) == 0 && info.st_mode & S_IFMT == S_IFLNK
+        let url = link ? URL(fileURLWithPath: path).resolvingSymlinksInPath() : URL(fileURLWithPath: path)
         let name = url.lastPathComponent
         let fd = inotify_init1(Int32(IN_NONBLOCK | IN_CLOEXEC))
         guard fd >= 0 else { return nil }

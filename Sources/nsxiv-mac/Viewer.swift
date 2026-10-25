@@ -82,6 +82,7 @@ final class Viewer {
     private var slideshowDelay: TimeInterval
     private var prefixExternal = false
     private var watcher: FileWatcher?
+    private var watchPending = false
     private var pendingReload: DispatchWorkItem?
     private var markedPrinted = false
 
@@ -259,7 +260,6 @@ final class Viewer {
         if let entry = currentEntry {
             image = ui?.loadImage(entry.url)
             errorText = image == nil ? "could not load: \(entry.url.lastPathComponent)" : nil
-            watchCurrent()
         } else {
             image = nil
             errorText = "no images"
@@ -270,6 +270,15 @@ final class Viewer {
         ui?.viewChanged()
         if image?.isAnimated == true { startAnimation() }
         ui?.barChanged()
+        // once the frame is out, as on a network share watching a file takes round trips; images
+        // passed quickly share one watch
+        if !watchPending {
+            watchPending = true
+            DispatchQueue.main.async { [weak self] in
+                self?.watchPending = false
+                self?.watchCurrent()
+            }
+        }
     }
 
     // r, a changed file, the key-handler: a fresh thumbnail, and in image mode a fresh image

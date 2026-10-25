@@ -51,6 +51,13 @@ jobs:
         run: swift build -c release --static-swift-stdlib
       - name: Smoke test
         run: .build/release/nsxiv-mac -v
+      # before the tests, so a failing one leaves the binary to look into
+      - name: Package
+        run: tar -czf nsxiv-mac-linux.tar.gz -C .build/release nsxiv-mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nsxiv-mac-linux
+          path: nsxiv-mac-linux.tar.gz
       - name: Regression checks
         run: |
           sources=()
@@ -81,6 +88,10 @@ jobs:
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac symbols
       - name: Run in a terminal with no display that shows kitty graphics
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty
+      - name: Run in a terminal with no display that shows kitty graphics from the viewer's files
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty-files
+      - name: Run in a large terminal with kitty graphics, where two neighbors do not both fit
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty-budget
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -90,12 +101,6 @@ jobs:
             wayland-shots
             weston-shots
             stacking-shots
-      - name: Package
-        run: tar -czf nsxiv-mac-linux.tar.gz -C .build/release nsxiv-mac
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nsxiv-mac-linux
-          path: nsxiv-mac-linux.tar.gz
 
   arch:
     runs-on: ubuntu-24.04
