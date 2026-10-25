@@ -104,12 +104,12 @@ else
     red=$(last a=T)
     picture "$red"
     [ "$(size "$red") $(pixel "$red" 500,290) $(pixel "$red" 995,575)" = "1000x580 255,0,0 255,0,0" ] ||
-        fail "the red image went as $(size "$red"), not filling 1000x580 pixels with red"
+        fail "the red image went as $(size "$red") $(pixel "$red" 500,290) $(pixel "$red" 995,575), not filling 1000x580 pixels with red"
     drawn -F "$(printf '\033_Ga=t,')" "the viewer did not send the next image ahead"
     blue=$(last a=t)
     picture "$blue"
     [ "$(size "$blue") $(pixel "$blue" 400,232) $(pixel "$blue" 5,5)" = "800x464 0,0,255 255,255,255" ] ||
-        fail "the blue image went as $(size "$blue"), not as 800x464 pixels with blue amid white"
+        fail "the blue image went as $(size "$blue") $(pixel "$blue" 400,232) $(pixel "$blue" 5,5), not as 800x464 pixels with blue amid white"
     printf j >&3
     drawn -F "$(printf '\033_Ga=p,i=%s,' "$blue")" "j did not show the blue image sent ahead"
     drawn -F 2-blue.png "j did not name the second image"

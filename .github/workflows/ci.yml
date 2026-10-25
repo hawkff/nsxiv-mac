@@ -51,6 +51,13 @@ jobs:
         run: swift build -c release --static-swift-stdlib
       - name: Smoke test
         run: .build/release/nsxiv-mac -v
+      # before the tests, so a failing one leaves the binary to look into
+      - name: Package
+        run: tar -czf nsxiv-mac-linux.tar.gz -C .build/release nsxiv-mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nsxiv-mac-linux
+          path: nsxiv-mac-linux.tar.gz
       - name: Regression checks
         run: |
           sources=()
@@ -92,12 +99,6 @@ jobs:
             wayland-shots
             weston-shots
             stacking-shots
-      - name: Package
-        run: tar -czf nsxiv-mac-linux.tar.gz -C .build/release nsxiv-mac
-      - uses: actions/upload-artifact@v4
-        with:
-          name: nsxiv-mac-linux
-          path: nsxiv-mac-linux.tar.gz
 
   arch:
     runs-on: ubuntu-24.04
