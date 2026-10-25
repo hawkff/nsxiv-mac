@@ -73,6 +73,19 @@ drawn() {
     done
     fail "$3"
 }
+# waits for the status bar to show $1; in tmux, which redraws only the cells that changed, as
+# tmux holds the pane
+bar() {
+    if [ "$mode" != tmux ]; then
+        drawn -F "$1" "$2"
+        return
+    fi
+    for _ in $(seq 100); do
+        if tmux -L nsxiv-smoke capture-pane -p 2>/dev/null | grep -q -F -- "$1"; then return; fi
+        sleep 0.1
+    done
+    fail "$2"
+}
 # how many kitty commands of kind $1, as a=T, a=t or a=p, the viewer sent
 sent() { grep -a -o -F "$(printf '\033_G')$1," "$out" | wc -l; }
 # waits for the viewer to have sent $2 kitty commands of kind $1
@@ -173,7 +186,7 @@ elif [ "$mode" = tmux ]; then
     drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask through tmux whether the terminal shows kitty graphics"
     printf '\033_Gi=31;OK\033\\\033_Gi=32;OK\033\\\033[?62;22c' >&3
     drawn -F "$(printf '\033_Ga=T,U=1,')" "the viewer sent no image for placeholders through tmux"
-    drawn -F 1-red.png "the status bar never named the first image"
+    bar 1-red.png "the status bar never named the first image"
     red=$(last a=T)
     drawn -E "$(placed "$red")" "tmux drew no placeholders for the red image"
     drawn -F "$(printf '\033_Ga=t,')" "the viewer did not send the next image ahead"
@@ -181,7 +194,7 @@ elif [ "$mode" = tmux ]; then
     printf j >&3
     drawn -F "$(printf '\033_Ga=p,U=1,i=%s,' "$blue")" "j did not place the blue image sent ahead"
     drawn -E "$(placed "$blue")" "tmux drew no placeholders for the blue image"
-    drawn -F 2-blue.png "j did not name the second image"
+    bar 2-blue.png "j did not name the second image"
 else
     drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask whether the terminal shows kitty graphics"
     if [ "$mode" = kitty ]; then files='EBADF:Failed to read image file' medium=png; else files=OK medium=file; fi
@@ -237,7 +250,7 @@ else
 fi
 before="$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)"
 printf m >&3
-drawn -F '*1 |' "m did not mark the image"
+bar '*1 |' "m did not mark the image"
 # the mark, on the last image, changed only the status bar, which goes without the image
 [ "$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)" = "$before" ] || fail "the mark sent or placed an image again"
 kill -TERM "$(cat "$pics/pid")"
