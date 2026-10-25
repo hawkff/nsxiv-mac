@@ -34,8 +34,12 @@ let controller = AppController(options: options, files: files)
 app.delegate = controller
 app.run()
 #else
-// a Wayland session gets a Wayland window; X11, or XWayland with WAYLAND_DISPLAY unset, an X one
+// a Wayland session gets a Wayland window; X11, or XWayland with WAYLAND_DISPLAY unset, an X one;
+// with no display, as over SSH on a headless machine, the terminal shows the images
 let viewer = Viewer(options: options, files: files)
 if let wayland = WaylandUI(viewer: viewer) { wayland.run() }
-X11UI(viewer: viewer).run()
+if let x11 = X11UI(viewer: viewer) { x11.run() }
+if let terminal = TerminalUI(viewer: viewer) { terminal.run() }
+warn("cannot open display \(ProcessInfo.processInfo.environment["DISPLAY"] ?? "(DISPLAY unset)")")
+exit(1)
 #endif

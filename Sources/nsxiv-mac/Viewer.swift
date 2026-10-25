@@ -2,7 +2,7 @@ import Foundation
 
 // A key as the bindings see it: the typed text ("j", "G", "?"), or nsxiv's X keysym
 // name for a key without text ("Return", "Left", "BackSpace").
-struct Keystroke {
+struct Keystroke: Equatable {
     var key: String
     var ctrl = false
 }
