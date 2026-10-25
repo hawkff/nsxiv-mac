@@ -135,12 +135,14 @@ final class TerminalUI: ViewerUI {
             let parts = String(decoding: about, as: UTF8.self).split(whereSeparator: \.isWhitespace).dropFirst(2)
                 .first?.split(separator: ".").compactMap { Int($0) } ?? []
             let version = parts.count > 1 ? (parts[0], parts[1]) : (0, 0)
-            // Sixels need chafa 1.14, which keeps the canvas's size and passes nothing through tmux
-            // itself; undithered, they take a third of the bytes, closer to the image. chafa's
-            // default symbols add box-drawing lines, which streak a photo. chafa 1.16 and later may
-            // probe the terminal, whose answers would then arrive as keys.
+            // Sixels need chafa 1.14, which can be kept from wrapping them for tmux, as tmux draws
+            // them itself. chafa keeps the canvas's pixels, the view being large enough at the scale
+            // it gives sixels, 1, and only pads them below. Undithered, they take a third of the
+            // bytes, closer to the image. chafa's default symbols add box-drawing lines, which
+            // streak a photo. chafa 1.16 and later may probe the terminal, whose answers would
+            // then arrive as keys.
             sixel = probe.sixel && version >= (1, 14)
-            chafa = (sixel ? ["chafa", "--format=sixels", "--exact-size=on", "--dither=none", "--passthrough=none"]
+            chafa = (sixel ? ["chafa", "--format=sixels", "--dither=none", "--passthrough=none"]
                 : ["chafa", "--format=symbols", "--symbols=block+space-wide-inverted", "--stretch"])
                 + ["--polite=on", "--relative=off", "--animate=off"] + (version >= (1, 16) ? ["--probe=off"] : [])
         }
@@ -1033,7 +1035,7 @@ final class TerminalUI: ViewerUI {
     }
 
     // the view's size for chafa, in cells: the terminal's for symbols, and for sixels chafa's own
-    // of 10x20 pixels, enough for the canvas, which it then keeps as it is
+    // of 10x20 pixels, enough for the canvas, which chafa then leaves at its size
     private var chafaSize: String {
         sixel ? "--size=\(sixelPixels.width / 10)x\((sixelPixels.height + 19) / 20)" : "--size=\(cols)x\(imageRows)"
     }
@@ -1046,8 +1048,8 @@ final class TerminalUI: ViewerUI {
         return sixelHeight.map { sixelImage(drawn, height: $0) } ?? drawn
     }
 
-    // A sixel image cut to height, a multiple of 6: chafa pads some below the image, by up to a
-    // cell of its own, which would reach into the bar, or past the end of the screen, scrolling it.
+    // A sixel image cut to height, a multiple of 6: chafa pads some below the image, to a cell of
+    // its own, which would reach into the bar, or past the end of the screen, scrolling it.
     // A - starts each band of 6 rows, and the raster attributes after the introducer's q name the
     // height.
     static func sixelImage(_ drawn: [UInt8], height: Int) -> [UInt8] {
