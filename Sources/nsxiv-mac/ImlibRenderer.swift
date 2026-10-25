@@ -13,6 +13,7 @@ final class ImlibRenderer {
     var drawsBar = true
 
     // the open file: its composed frames, and the current one rotated and flipped
+    private var loadedPath: String?
     private var frames: [Imlib_Image] = []
     private var shown: Imlib_Image?
     private let colorModifier: Imlib_Color_Modifier
@@ -35,6 +36,8 @@ final class ImlibRenderer {
 
     init(viewer: Viewer) {
         self.viewer = viewer
+        let memory = Int(clamping: ProcessInfo.processInfo.physicalMemory / 100) * Config.imageCachePercent
+        imlib_set_cache_size(Int32(min(Config.imageCacheLimit, memory)))
         colorModifier = imlib_create_color_modifier()
         font = Self.matchFont(Config.barFont)
         if font == nil { warn("no font matches \(Config.barFont)") }
@@ -80,9 +83,12 @@ final class ImlibRenderer {
     // MARK: - images
 
     func loadImage(_ url: URL) -> ImageInfo? {
-        freeImage()
+        // a reload reads the file again; another file leaves this one cached for a revisit
+        freeImage(decache: url.path == loadedPath)
+        loadedPath = url.path
         guard let first = imlib_load_image_frame(url.path, 1) else { return nil }
         imlib_context_set_image(first)
+        imlib_image_set_changes_on_disk() // a revisit checks the file's time, as in nsxiv
         var info = Imlib_Frame_Info()
         imlib_image_get_frame_info(&info)
         var delays = [0.1]
@@ -129,7 +135,7 @@ final class ImlibRenderer {
         if viewer.contrast != 0 { imlib_modify_color_modifier_contrast(viewer.contrastValue) }
     }
 
-    private func freeImage() {
+    private func freeImage(decache: Bool) {
         if let shown, !frames.contains(shown) {
             imlib_context_set_image(shown)
             imlib_free_image()
@@ -137,7 +143,7 @@ final class ImlibRenderer {
         shown = nil
         for frame in frames {
             imlib_context_set_image(frame)
-            imlib_free_image_and_decache() // a reload must read the file again
+            if decache { imlib_free_image_and_decache() } else { imlib_free_image() }
         }
         frames = []
     }

@@ -193,6 +193,7 @@ struct RegressionChecks {
     }
     #else
     static func checkLinuxHelpers(directory: URL) throws {
+        let fm = FileManager.default
         assert(keyName(forKeysym: 0x47) == "G" && keyName(forKeysym: 0x20) == " ", "printable keys arrive as typed")
         assert(keyName(forKeysym: 0xff0d) == "Return" && keyName(forKeysym: 0xff51) == "Left",
                "other keys go by keysym name")
@@ -275,6 +276,45 @@ struct RegressionChecks {
         var gif = Array("GIF89a".utf8) + le(20) + le(10)
         gif += [0x80, 0, 0, 0, 0, 0, 255, 0, 0] // two colors, black and red
         gif += frame(12, 3, 4, 4, color: 1) + frame(0, 0, 1, 1, color: 0) + [0x3b]
+        // the terminal's PNG writer gives back, through libpng, the pixels it took
+        guard let pixelsIn = imlib_create_image(3, 2) else { fatalError("no image") }
+        imlib_context_set_image(pixelsIn)
+        imlib_image_set_has_alpha(0)
+        let colors: [UInt32] = [0xffff_0000, 0xff00_ff00, 0xff00_00ff, 0xff12_3456, 0xff00_0000, 0xffff_ffff]
+        let writable = imlib_image_get_data()!
+        for (i, color) in colors.enumerated() { writable[i] = color }
+        imlib_image_put_back_data(writable)
+        let frameURL = directory.appendingPathComponent("frame.png")
+        try TerminalUI.png(of: pixelsIn)!.write(to: frameURL)
+        imlib_context_set_image(pixelsIn)
+        imlib_free_image()
+        guard let pixelsOut = imlib_load_image_immediately_without_cache(frameURL.path) else { fatalError("libpng rejects the PNG") }
+        imlib_context_set_image(pixelsOut)
+        let decodedPixels = imlib_image_get_data_for_reading_only()!
+        assert(imlib_image_get_width() == 3 && imlib_image_get_height() == 2
+               && (0..<6).map { decodedPixels[$0] & 0xff_ffff } == colors.map { $0 & 0xff_ffff },
+               "a PNG frame keeps its pixels")
+        imlib_free_image()
+
+        // a revisit takes the decoded image from Imlib2's cache, but a file that changed meanwhile,
+        // or one reloaded, is read again
+        let renderer = ImlibRenderer(viewer: Viewer(options: Options(), files: []))
+        func picture(_ name: String, width: Int32) -> URL {
+            let url = directory.appendingPathComponent(name)
+            imlib_context_set_image(imlib_create_image(width, 10)!)
+            imlib_image_set_format("png")
+            imlib_save_image(url.path)
+            imlib_free_image()
+            return url
+        }
+        let cached = picture("cached.png", width: 30), other = picture("other.png", width: 40)
+        assert(renderer.loadImage(cached)?.size.width == 30 && renderer.loadImage(other)?.size.width == 40)
+        _ = picture("cached.png", width: 50)
+        try fm.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: cached.path)
+        assert(renderer.loadImage(cached)?.size.width == 50, "a revisit reads a file that changed meanwhile")
+        _ = picture("cached.png", width: 60)
+        assert(renderer.loadImage(cached)?.size.width == 60, "a reload reads the file again")
+
         let patch = directory.appendingPathComponent("patch.gif")
         try Data(gif).write(to: patch)
         guard let thumb = ImlibRenderer.makeThumbnail(patch.path) else { fatalError("no thumbnail for patch.gif") }

@@ -20,6 +20,7 @@ final class TerminalUI: ViewerUI {
     private var rows = 24
     private var cell = (width: 8.0, height: 16.0) // pixels, where the terminal says; else the usual 1:2 shape
     private var shownImage = 0 // the kitty image on screen, 1 or 2; 0 when there may be others
+    private var imageDirty = true // false when only the status bar changed since the last frame
     private var redrawDue: DispatchTime?
     private var sources: [DispatchSourceProtocol] = []
     private var cutOff: [UInt8] = [] // an escape sequence the last read ended inside
@@ -88,7 +89,7 @@ final class TerminalUI: ViewerUI {
         renderer = ImlibRenderer(viewer: viewer)
         renderer.drawsBar = false // the terminal's last line shows it
 
-        renderer.onThumbnail = { [unowned self] in self.setNeedsRedraw(after: 0.3) }
+        renderer.onThumbnail = { [unowned self] in self.setNeedsRedraw(image: true, after: 0.3) }
         viewer.ui = self
         let input = DispatchSource.makeReadSource(fileDescriptor: tty, queue: .main)
         input.setEventHandler { [unowned self] in self.readKeys() }
@@ -115,7 +116,7 @@ final class TerminalUI: ViewerUI {
     func keyHandlerDidRun() {
         Self.enter()
         shownImage = 0 // the handler may have left images of its own
-        setNeedsRedraw() // the alternate screen comes back empty
+        setNeedsRedraw(image: true) // the alternate screen comes back empty
     }
 
     // raw keys and the alternate screen, for as long as the viewer has the terminal
@@ -347,12 +348,12 @@ final class TerminalUI: ViewerUI {
 
     func imageChanged() {
         renderer.imageChanged()
-        setNeedsRedraw()
+        setNeedsRedraw(image: true)
     }
 
-    func viewChanged() { setNeedsRedraw() }
-    func gridChanged() { setNeedsRedraw() }
-    func barChanged() { setNeedsRedraw() }
+    func viewChanged() { setNeedsRedraw(image: true) }
+    func gridChanged() { setNeedsRedraw(image: viewer.thumbnailMode) } // marks show in the grid only
+    func barChanged() { setNeedsRedraw(image: false) }
     func beep() { Self.writeAll(tty, [0x07]) }
 
     func layoutChanged() {
@@ -367,7 +368,7 @@ final class TerminalUI: ViewerUI {
         }
         viewer.resizeCanvas(canvasSize)
         viewer.resizeGrid(canvasSize)
-        setNeedsRedraw()
+        setNeedsRedraw(image: true)
     }
 
     // the view in units of a sixteenth of a cell's height, so zoom reads the same either way
@@ -377,7 +378,7 @@ final class TerminalUI: ViewerUI {
 
     func invalidateThumbnails(_ entries: [FileEntry]) {
         renderer.invalidateThumbnails(entries)
-        setNeedsRedraw()
+        setNeedsRedraw(image: true)
     }
 
     // the terminal keeps its size, and the view fills it already
@@ -394,9 +395,11 @@ final class TerminalUI: ViewerUI {
 
     private var imageRows: Int { max(0, rows - (viewer.barVisible ? 1 : 0)) }
 
-    // shortcut: each frame costs a chafa run or a whole image, so thumbnails that come in one at
-    // a time redraw the grid at most every 0.3 s
-    private func setNeedsRedraw(after delay: Double = 0.01) {
+    // A frame costs a chafa run or a whole image, so one in which only the status bar changed, as
+    // after a mark, rewrites just the bar, as cbzr keeps a page's image when its chrome changes.
+    // shortcut: thumbnails that come in one at a time redraw the grid at most every 0.3 s
+    private func setNeedsRedraw(image: Bool, after delay: Double = 0.01) {
+        if image { imageDirty = true }
         let due = DispatchTime.now() + delay
         if let redrawDue, redrawDue <= due { return }
         redrawDue = due
@@ -407,30 +410,30 @@ final class TerminalUI: ViewerUI {
         }
     }
 
+    // In synchronized output, the terminal shows the frame once it is whole, so the bar never
+    // names an image that has yet to come; terminals without it ignore the mode.
     private func render() {
-        var out = Array("\u{1b}[H".utf8)
-        // a frame that could not be drawn clears the screen, so no other image stays under this name
-        if cols > 0, imageRows > 0 {
-            var drawn: [UInt8]?
-            if saveFrame() {
-                drawn = kitty ? FileManager.default.contents(atPath: frame).map { kittyFrame($0) } : drawnRows()
+        var out = Array("\u{1b}[?2026h\u{1b}[H".utf8)
+        if imageDirty {
+            imageDirty = false
+            // a frame that could not be drawn clears the screen, so no other image stays under this name
+            if cols > 0, imageRows > 0 {
+                let drawn = drawCanvas().flatMap { kitty ? Self.png(of: $0).map { kittyFrame($0) } : drawnRows($0) }
+                if drawn == nil { shownImage = 0 }
+                out += drawn ?? Array("\(kitty ? Self.deleteImages : "")\u{1b}[2J".utf8)
+            } else if shownImage != 0 { // no row left for an image, as in a one-row terminal with the bar
+                out += Array(Self.deleteImages.utf8)
+                shownImage = 0
             }
-            if drawn == nil { shownImage = 0 }
-            out += drawn ?? Array("\(kitty ? Self.deleteImages : "")\u{1b}[2J".utf8)
-        } else if shownImage != 0 { // no row left for an image, as in a one-row terminal with the bar
-            out += Array(Self.deleteImages.utf8)
-            shownImage = 0
         }
         if viewer.barVisible, rows > 0 { out += Array("\u{1b}[\(rows);1H\u{1b}[0;7m\(statusLine())\u{1b}[0m".utf8) }
-        out += Array("\u{1b}[H".utf8) // where a stray warning lands without scrolling the screen
+        out += Array("\u{1b}[H\u{1b}[?2026l".utf8) // home, where a stray warning cannot scroll the screen
         Self.writeAll(tty, out)
     }
 
-    // the view drawn into the frame file: at the terminal's own pixels for a kitty image, at
-    // 16 pixels a row for chafa, which needs no more for its symbols; false when it failed
-    // shortcut: a kitty frame of 2560x1640 pixels takes about 0.45 s to encode and 3 MB to send;
-    // cap its pixels, trading sharpness for speed, if larger terminals feel slow
-    private func saveFrame() -> Bool {
+    // the view drawn into the canvas, at the terminal's own pixels for a kitty image, at 16 pixels
+    // a row for chafa, which needs no more for its symbols
+    private func drawCanvas() -> Imlib_Image? {
         let scale = kitty ? cell.height / 16 : 1
         let width = max(1, Int((canvasSize.width * scale).rounded()))
         let height = max(1, Int((canvasSize.height * scale).rounded()))
@@ -447,17 +450,64 @@ final class TerminalUI: ViewerUI {
                 imlib_image_attach_data_value("compression", nil, 1, nil) // quick to write, read at once
             }
         }
-        guard let canvas else { return false }
+        guard let canvas else { return nil }
         renderer.render(into: canvas, width: width, height: height, scale: scale)
-        imlib_context_set_image(canvas)
-        truncate(frame, 0) // a save that fails leaves no older frame to show
-        imlib_save_image(frame)
-        var info = stat()
-        return stat(frame, &info) == 0 && info.st_size > 0
+        return canvas
     }
 
-    // the frame as rows of colored symbols, one per cell, from chafa
-    private func drawnRows() -> [UInt8]? {
+    // The canvas as a PNG, written the way cbzr writes its pages: 8-bit RGB, each row with the Up
+    // filter, zlib at its fastest level. libpng, which Imlib2 saves with, tries all five filters on
+    // every row; for a 2560x1638 frame that took 306 ms against 116 ms here, for 3% less data.
+    // shortcut: such a frame still takes about 0.25 s to draw and encode and 2.4 MB to send; draw
+    // fewer pixels where the image is upscaled anyway, if larger terminals feel slow
+    static func png(of image: Imlib_Image) -> Data? {
+        imlib_context_set_image(image)
+        let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
+        guard let argb = imlib_image_get_data_for_reading_only() else { return nil }
+        let stride = 1 + 3 * width
+        var rows = [UInt8](repeating: 0, count: stride * height)
+        var above = [UInt8](repeating: 0, count: 3 * width) // the row above, before its filter
+        rows.withUnsafeMutableBufferPointer { rows in
+            above.withUnsafeMutableBufferPointer { above in
+                for y in 0..<height {
+                    let row = rows.baseAddress! + y * stride, pixels = argb + y * width
+                    row[0] = 2 // Up: each byte less the one above it
+                    for x in 0..<width {
+                        let p = pixels[x], i = 3 * x
+                        let r = UInt8(truncatingIfNeeded: p >> 16), g = UInt8(truncatingIfNeeded: p >> 8)
+                        let b = UInt8(truncatingIfNeeded: p)
+                        row[1 + i] = r &- above[i]
+                        row[2 + i] = g &- above[i + 1]
+                        row[3 + i] = b &- above[i + 2]
+                        above[i] = r
+                        above[i + 1] = g
+                        above[i + 2] = b
+                    }
+                }
+            }
+        }
+        var size = compressBound(uLong(rows.count))
+        var deflated = [UInt8](repeating: 0, count: Int(size))
+        guard compress2(&deflated, &size, rows, uLong(rows.count), Z_BEST_SPEED) == Z_OK else { return nil }
+        func bigEndian(_ value: Int) -> [UInt8] { withUnsafeBytes(of: UInt32(value).bigEndian, Array.init) }
+        var png = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+        func chunk(_ type: String, _ body: ArraySlice<UInt8>) {
+            let typed = Array(type.utf8) + body
+            png.append(contentsOf: bigEndian(body.count))
+            png.append(contentsOf: typed)
+            png.append(contentsOf: bigEndian(Int(crc32(0, typed, uInt(typed.count)))))
+        }
+        chunk("IHDR", ArraySlice(bigEndian(width) + bigEndian(height) + [8, 2, 0, 0, 0])) // 8-bit RGB
+        chunk("IDAT", deflated[..<Int(size)])
+        chunk("IEND", [])
+        return png
+    }
+
+    // the canvas as rows of colored symbols, one per cell, from chafa, which reads it from a file
+    private func drawnRows(_ canvas: Imlib_Image) -> [UInt8]? {
+        imlib_context_set_image(canvas)
+        truncate(frame, 0) // a save that fails leaves chafa no older frame to draw
+        imlib_save_image(frame)
         guard var drawn = Self.output(of: chafa + ["--size=\(cols)x\(imageRows)", frame]).map({ [UInt8]($0) })
         else { return nil }
         if drawn.last == 0x0a { drawn.removeLast() } // a newline after the bottom row would scroll the screen
