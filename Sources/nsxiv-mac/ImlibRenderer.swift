@@ -228,6 +228,13 @@ final class ImlibRenderer {
     // MARK: - thumbnails
 
     func invalidateThumbnails(_ entries: [FileEntry]) {
+        // the files' decoded images go too: an edit that kept a future modification time would
+        // pass Imlib2's check of the file's time
+        // shortcut: drops every cached image; imlib_image_decache_file, from Imlib2 1.12, would
+        // drop just these, once older Imlib2 versions need no support
+        let cacheSize = imlib_get_cache_size()
+        imlib_set_cache_size(0)
+        imlib_set_cache_size(cacheSize)
         for entry in entries {
             failedThumbs.remove(entry.path)
             if let thumb = thumbs.removeValue(forKey: entry.path) {

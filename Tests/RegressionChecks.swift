@@ -296,24 +296,33 @@ struct RegressionChecks {
                "a PNG frame keeps its pixels")
         imlib_free_image()
 
-        // a revisit takes the decoded image from Imlib2's cache, but a file that changed meanwhile,
-        // or one reloaded, is read again
+        // A revisit takes the decoded image from Imlib2's cache while the file's time stays, which an
+        // hour ahead a rewrite's ctime cannot pass; a reload, an invalidation and a new time read the file.
         let renderer = ImlibRenderer(viewer: Viewer(options: Options(), files: []))
-        func picture(_ name: String, width: Int32) -> URL {
+        let later = Date().addingTimeInterval(3600)
+        func picture(_ name: String, width: Int32, time: Date) throws -> URL {
             let url = directory.appendingPathComponent(name)
             imlib_context_set_image(imlib_create_image(width, 10)!)
             imlib_image_set_format("png")
             imlib_save_image(url.path)
             imlib_free_image()
+            try fm.setAttributes([.modificationDate: time], ofItemAtPath: url.path)
             return url
         }
-        let cached = picture("cached.png", width: 30), other = picture("other.png", width: 40)
-        assert(renderer.loadImage(cached)?.size.width == 30 && renderer.loadImage(other)?.size.width == 40)
-        _ = picture("cached.png", width: 50)
-        try fm.setAttributes([.modificationDate: Date().addingTimeInterval(60)], ofItemAtPath: cached.path)
-        assert(renderer.loadImage(cached)?.size.width == 50, "a revisit reads a file that changed meanwhile")
-        _ = picture("cached.png", width: 60)
-        assert(renderer.loadImage(cached)?.size.width == 60, "a reload reads the file again")
+        let cached = try picture("cached.png", width: 30, time: later)
+        let other = try picture("other.png", width: 40, time: later)
+        func loadedWidth(_ url: URL) -> CGFloat? { renderer.loadImage(url)?.size.width }
+        assert(loadedWidth(cached) == 30 && loadedWidth(other) == 40)
+        _ = try picture("cached.png", width: 50, time: later)
+        assert(loadedWidth(cached) == 30, "a revisit takes an unchanged file's decoded image from the cache")
+        assert(loadedWidth(cached) == 50, "a reload reads the file again")
+        _ = loadedWidth(other)
+        _ = try picture("cached.png", width: 60, time: later)
+        renderer.invalidateThumbnails([FileEntry(path: cached.path)])
+        assert(loadedWidth(cached) == 60, "an invalidated file is read again")
+        _ = loadedWidth(other)
+        _ = try picture("cached.png", width: 70, time: later.addingTimeInterval(60))
+        assert(loadedWidth(cached) == 70, "a revisit reads a file whose time changed")
 
         let patch = directory.appendingPathComponent("patch.gif")
         try Data(gif).write(to: patch)
