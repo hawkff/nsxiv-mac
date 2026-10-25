@@ -53,9 +53,9 @@ kill -0 "$pid"
 shot=$shots/cosmic.png
 WAYLAND_DISPLAY=$host grim "$shot"
 
-# the bounding box of each quarter's color, as width height x y
+# the bounding box of a color within fuzz $2 (default 3%), as width height x y
 box() {
-    magick "$shot" -alpha off -fuzz 3% -fill black +opaque "$1" -fill white -opaque "$1" -trim \
+    magick "$shot" -alpha off -fuzz "${2:-3%}" -fill black +opaque "$1" -fill white -opaque "$1" -trim \
         -format '%w %h %X %Y' info: | tr -d '+'
 }
 for color in magenta yellow cyan blue; do
@@ -69,7 +69,7 @@ for color in yellow cyan blue; do
     [ "${dw#-}" -le 1 ] && [ "${dh#-}" -le 1 ] || fail "the $color quarter is cut: the window ran past the edge"
 done
 # the window grows across to the right edge but has room below, so a bar the bottom edge cut
-# would reach it
-set -- $(box '#eeeeee')
+# would reach it; a tight fuzz leaves out the light title text in COSMIC's header
+set -- $(box '#eeeeee' 1%)
 echo "status bar: ${1}x$2 at $3,$4"
 [ "$2" -ge 20 ] && [ $(($4 + $2)) -lt 800 ] || fail "the status bar ran past the bottom edge"
