@@ -56,7 +56,6 @@ final class TerminalUI: ViewerUI {
     private var chafaAhead = false // chafa making a frame ahead, in the background
     private var framesForgotten = 0 // a frame made ahead from before that is stale
     private var placeholderCache: (layout: [Int], cells: String) = ([], "")
-    private var sixelLayout: [Int] = [] // the columns, rows and bar of the last sixel frame
     // the files loaded or sent ahead: what loading them gave, and their times just before
     private var loaded: [String: (info: ImageInfo, stamp: [Int])] = [:]
     private var rendererPath: String? // the file the renderer holds; another loads once it must draw
@@ -166,6 +165,7 @@ final class TerminalUI: ViewerUI {
         lastImageID = Self.tmux ? UInt32(pane % 255 + 1) << 24 : UInt32(getpid() & 0xffff) << 8
         renderer = ImlibRenderer(viewer: viewer)
         renderer.drawsBar = false // the terminal's last line shows it
+        renderer.clearBackground = true // the terminal's own shows around the image
 
         renderer.onThumbnail = { [unowned self] in self.setNeedsRedraw(image: true, after: 0.3) }
         viewer.ui = self
@@ -338,38 +338,43 @@ final class TerminalUI: ViewerUI {
     }
 
     // The canvas sent to the terminal as image id, with the bytes the terminal stores for it: raw
-    // RGB in a file the terminal reads and deletes itself, kept as it came, or PNG through the
-    // terminal, decoded to RGBA. With place, it also shows at the top left, scaled to the image
-    // rows, as placement 1.
-    private func transmit(_ canvas: Imlib_Image, id: UInt32, place: Bool) -> (command: [UInt8], bytes: Int)? {
+    // pixels in a file the terminal reads and deletes itself, kept as they came, or PNG through
+    // the terminal, decoded to RGBA. A canvas the image does not cover goes with its alpha, so the
+    // terminal's background shows around the image. With place, it also shows at the top left,
+    // scaled to the image rows, as placement 1.
+    private func transmit(_ canvas: Imlib_Image, id: UInt32, place: Bool, opaque: Bool) -> (command: [UInt8], bytes: Int)? {
         let keys = place ? "a=T,\(placement(id))" : "a=t,i=\(id)"
         imlib_context_set_image(canvas)
         let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
-        if let imageFiles, let path = Self.rgbFile(of: canvas, at: "\(imageFiles)/\(id)") {
-            let file = Data(path.utf8).base64EncodedString()
-            return (Array(Self.command("\(keys),f=24,s=\(width),v=\(height),t=t,q=2;\(file)").utf8), 3 * width * height)
+        if let imageFiles, let path = Self.pixelFile(of: canvas, at: "\(imageFiles)/\(id)", alpha: !opaque) {
+            let file = Data(path.utf8).base64EncodedString(), channels = opaque ? 3 : 4
+            return (Array(Self.command("\(keys),f=\(8 * channels),s=\(width),v=\(height),t=t,q=2;\(file)").utf8),
+                    channels * width * height)
         }
-        return Self.png(of: canvas).map { (Self.kittyImage($0, keys: keys), 4 * width * height) }
+        return Self.png(of: canvas, alpha: !opaque).map { (Self.kittyImage($0, keys: keys), 4 * width * height) }
     }
 
-    // the canvas as raw RGB in the file at path; nil when the file could not take it whole, as on a
-    // full disk, which the terminal would answer only with an error the viewer does not ask for
-    private static func rgbFile(of canvas: Imlib_Image, at path: String) -> String? {
+    // the canvas as raw RGB, or RGBA, in the file at path; nil when the file could not take it
+    // whole, as on a full disk, which the terminal would answer only with an error the viewer
+    // does not ask for
+    private static func pixelFile(of canvas: Imlib_Image, at path: String, alpha: Bool) -> String? {
         imlib_context_set_image(canvas)
         let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
         guard let argb = imlib_image_get_data_for_reading_only() else { return nil }
-        let rgb = [UInt8](unsafeUninitializedCapacity: 3 * width * height) { rgb, count in
+        let channels = alpha ? 4 : 3
+        let pixels = [UInt8](unsafeUninitializedCapacity: channels * width * height) { bytes, count in
             for i in 0..<width * height {
-                let p = argb[i]
-                rgb[3 * i] = UInt8(truncatingIfNeeded: p >> 16)
-                rgb[3 * i + 1] = UInt8(truncatingIfNeeded: p >> 8)
-                rgb[3 * i + 2] = UInt8(truncatingIfNeeded: p)
+                let p = argb[i], at = channels * i
+                bytes[at] = UInt8(truncatingIfNeeded: p >> 16)
+                bytes[at + 1] = UInt8(truncatingIfNeeded: p >> 8)
+                bytes[at + 2] = UInt8(truncatingIfNeeded: p)
+                if alpha { bytes[at + 3] = UInt8(truncatingIfNeeded: p >> 24) }
             }
-            count = 3 * width * height
+            count = channels * width * height
         }
         let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return nil }
-        let whole = writeAll(fd, rgb)
+        let whole = writeAll(fd, pixels)
         close(fd)
         if !whole { unlink(path) }
         return whole ? path : nil
@@ -443,7 +448,8 @@ final class TerminalUI: ViewerUI {
             show += Array(Self.command("a=p,\(placement(id)),q=1").utf8)
         } else {
             id = newImageID()
-            guard let canvas = drawCanvas(), let sent = transmit(canvas, id: id, place: true) else { return nil }
+            guard let canvas = drawCanvas(), let sent = transmit(canvas.image, id: id, place: true, opaque: canvas.opaque)
+            else { return nil }
             show += sent.command
             if let key { keep(key, id: id, bytes: sent.bytes) }
         }
@@ -581,10 +587,10 @@ final class TerminalUI: ViewerUI {
             guard !kitty || reserved + bytes <= Self.keptBudget else { return }
             let key = key(path: entry.path, frame: 0, rotation: 0, flipH: false, flipV: false, view: view, pixels: pixels)
             guard let canvas = makeCanvas(pixels.width, pixels.height) else { return }
-            renderer.drawStill(next.image, view: view, into: canvas, width: pixels.width, height: pixels.height,
-                               scale: pixels.scale)
+            let opaque = renderer.drawStill(next.image, view: view, into: canvas, width: pixels.width,
+                                            height: pixels.height, scale: pixels.scale)
             if !kitty { // chafa reads the frame from a file of its own, as the view's may be drawn meanwhile
-                guard let png = Self.png(of: canvas, level: Z_NO_COMPRESSION),
+                guard let png = Self.png(of: canvas, level: Z_NO_COMPRESSION, alpha: !opaque),
                       FileManager.default.createFile(atPath: frame + "-ahead", contents: png) else { return }
                 if let stamp { loaded[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
                 chafaAhead = true
@@ -604,9 +610,12 @@ final class TerminalUI: ViewerUI {
                 }
                 return
             }
+            // in a file, a frame with transparency takes 4 bytes a pixel, which must fit before it is written
+            guard imageFiles == nil || opaque || reserved + 4 * pixels.width * pixels.height <= Self.keptBudget else { return }
             let id = newImageID()
             // a frame that went as PNG, as when the disk is full, takes more room than counted
-            guard let sent = transmit(canvas, id: id, place: false), reserved + sent.bytes <= Self.keptBudget else { return }
+            guard let sent = transmit(canvas, id: id, place: false, opaque: opaque), reserved + sent.bytes <= Self.keptBudget
+            else { return }
             if let stamp { loaded[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
             keep(key, id: id, bytes: sent.bytes)
             Self.writeAll(tty, sent.command + trimKept(sparing: key))
@@ -939,12 +948,10 @@ final class TerminalUI: ViewerUI {
                     out += frame.show
                     if Self.tmux { after = frame.hide } else { out += frame.hide }
                 } else if !kitty, let drawn = chafaFrame(currentKey()) {
-                    // a sixel image leaves what it does not cover, as the last row, so a new layout starts clear
-                    let layout = [cols, rows, viewer.barVisible ? 1 : 0]
-                    if sixel, sixelLayout != layout {
-                        sixelLayout = layout
-                        out += Array("\u{1b}[2J".utf8)
-                    }
+                    // a sixel image leaves what it does not cover, as the last row and its own
+                    // transparent pixels, so each starts on a clear screen
+                    // shortcut: xterm, without synchronized output, shows the screen blank meanwhile
+                    if sixel { out += Array("\u{1b}[2J".utf8) }
                     out += drawn
                 } else { // the next redraw, even of the bar alone, tries again
                     imageDirty = true
@@ -971,13 +978,12 @@ final class TerminalUI: ViewerUI {
                 scale)
     }
 
-    // the current view drawn into the canvas
-    private func drawCanvas() -> Imlib_Image? {
+    // the current view drawn into the canvas, and whether it came out opaque
+    private func drawCanvas() -> (image: Imlib_Image, opaque: Bool)? {
         if !viewer.thumbnailMode { loadRenderer() }
         let pixels = framePixels(viewer.viewport, image: !viewer.thumbnailMode && viewer.image != nil)
         guard let canvas = makeCanvas(pixels.width, pixels.height) else { return nil }
-        renderer.render(into: canvas, width: pixels.width, height: pixels.height, scale: pixels.scale)
-        return canvas
+        return (canvas, renderer.render(into: canvas, width: pixels.width, height: pixels.height, scale: pixels.scale))
     }
 
     // the canvas, made anew for another size
@@ -998,23 +1004,24 @@ final class TerminalUI: ViewerUI {
         return canvas
     }
 
-    // The canvas as a PNG: 8-bit RGB, each row with the Up filter, zlib at its fastest level by
-    // default. libpng, which Imlib2 saves with, tries all five filters on every row; for a
-    // 2560x1638 frame that took 306 ms against 116 ms here, for 3% less data.
-    static func png(of image: Imlib_Image, level: Int32 = Z_BEST_SPEED) -> Data? {
+    // The canvas as a PNG: 8-bit RGB, or RGBA with alpha, each row with the Up filter, zlib at its
+    // fastest level by default. libpng, which Imlib2 saves with, tries all five filters on every
+    // row; for a 2560x1638 frame that took 306 ms against 116 ms here, for 3% less data.
+    static func png(of image: Imlib_Image, level: Int32 = Z_BEST_SPEED, alpha: Bool = false) -> Data? {
         imlib_context_set_image(image)
         let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
         guard let argb = imlib_image_get_data_for_reading_only() else { return nil }
-        let stride = 1 + 3 * width
+        let channels = alpha ? 4 : 3
+        let stride = 1 + channels * width
         var rows = [UInt8](repeating: 0, count: stride * height)
-        var above = [UInt8](repeating: 0, count: 3 * width) // the row above, before its filter
+        var above = [UInt8](repeating: 0, count: channels * width) // the row above, before its filter
         rows.withUnsafeMutableBufferPointer { rows in
             above.withUnsafeMutableBufferPointer { above in
                 for y in 0..<height {
                     let row = rows.baseAddress! + y * stride, pixels = argb + y * width
                     row[0] = 2 // Up: each byte less the one above it
                     for x in 0..<width {
-                        let p = pixels[x], i = 3 * x
+                        let p = pixels[x], i = channels * x
                         let r = UInt8(truncatingIfNeeded: p >> 16), g = UInt8(truncatingIfNeeded: p >> 8)
                         let b = UInt8(truncatingIfNeeded: p)
                         row[1 + i] = r &- above[i]
@@ -1023,6 +1030,11 @@ final class TerminalUI: ViewerUI {
                         above[i] = r
                         above[i + 1] = g
                         above[i + 2] = b
+                        if alpha {
+                            let a = UInt8(truncatingIfNeeded: p >> 24)
+                            row[4 + i] = a &- above[i + 3]
+                            above[i + 3] = a
+                        }
                     }
                 }
             }
@@ -1038,7 +1050,7 @@ final class TerminalUI: ViewerUI {
             png.append(contentsOf: typed)
             png.append(contentsOf: bigEndian(Int(crc32(0, typed, uInt(typed.count)))))
         }
-        chunk("IHDR", ArraySlice(bigEndian(width) + bigEndian(height) + [8, 2, 0, 0, 0])) // 8-bit RGB
+        chunk("IHDR", ArraySlice(bigEndian(width) + bigEndian(height) + [8, alpha ? 6 : 2, 0, 0, 0])) // 8-bit RGB(A)
         chunk("IDAT", deflated[..<Int(size)])
         chunk("IEND", [])
         return png
@@ -1052,7 +1064,7 @@ final class TerminalUI: ViewerUI {
             keepChafa(key, drawn)
             return drawn
         }
-        guard let canvas = drawCanvas(), let png = Self.png(of: canvas, level: Z_NO_COMPRESSION),
+        guard let canvas = drawCanvas(), let png = Self.png(of: canvas.image, level: Z_NO_COMPRESSION, alpha: !canvas.opaque),
               FileManager.default.createFile(atPath: frame, contents: png),
               let drawn = Self.chafaOutput(chafa + [chafaSize, frame], sixelHeight: sixel ? canvasPixels.height : nil)
         else { return nil }

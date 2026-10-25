@@ -44,7 +44,8 @@ if [ "$mode" = sixel ]; then
     PATH=$pics/bin:$PATH
 fi
 export TERM=xterm-256color COLORTERM=truecolor bin pics mode winsize start
-fail() { echo "$1" >&2; tail -c 1500 "$out" | od -c | tail -30 >&2; exit 1; }
+fail() { echo "$1" >&2; tail -c 1500 "$out" | od -c | tail -30 >&2; tmux -L nsxiv-smoke kill-server 2>/dev/null; exit 1; }
+[ "$mode" != tmux ] || tmux -L nsxiv-smoke kill-server 2>/dev/null || true # one a failed run left
 # the session in script's terminal of 100 by 30 cells, or for kitty images the rows, columns and
 # pixels of winsize, which stty cannot set: it notes the terminal and the viewer's pid, and
 # compares the terminal's mode before and after the viewer
@@ -57,7 +58,8 @@ fi
 tty >"$pics/tty"
 before=$(stty -g)
 if [ "$mode" = tmux ]; then # -u for UTF-8, which the placeholders are, in a locale without it
-    tmux -u -L nsxiv-smoke -f "$pics/tmux.conf" new-session "sh $pics/run"
+    # the pane's variables named, as a tmux server still running would give it its own
+    tmux -u -L nsxiv-smoke -f "$pics/tmux.conf" new-session "env pics='$pics' bin='$bin' start='$start' sh $pics/run"
 else
     sh "$pics/run"
 fi
@@ -118,7 +120,7 @@ sixels() { grep -a -o -F "$(printf '\033P')" "$out" | wc -l; }
 # its low byte, perhaps after a move of the cursor
 placed() { printf '\033\\[38;5;%sm(\033\\[[0-9;]*H)?\364\216\273\256' "$(($1 & 255))"; }
 # The image the viewer sent as id $1, written to $pics/image-$1.png: PNG chunks up to the one
-# with m=0, or raw RGB in the file whose path came base64 encoded
+# with m=0, or raw RGB or RGBA, as f=24 or f=32 says, in the file whose path came base64 encoded
 picture() {
     awk -v id="$1" 'BEGIN { RS = "\033\\\\" }
         {
@@ -129,7 +131,7 @@ picture() {
                 if (keys ~ /,t=t,/) {
                     match(keys, /,s=[0-9]+,/); w = substr(keys, RSTART + 3, RLENGTH - 4)
                     match(keys, /,v=[0-9]+,/); h = substr(keys, RSTART + 3, RLENGTH - 4)
-                    print "file", w, h, data
+                    print (keys ~ /,f=32,/ ? "rgba" : "rgb"), w, h, data
                     exit
                 }
                 taking = 1
@@ -141,19 +143,27 @@ picture() {
             }
         }' "$out" >"$pics/sent"
     read -r kind w h data <"$pics/sent" || fail "the viewer sent no image $1"
-    if [ "$kind" = file ]; then
-        magick -size "${w}x$h" -depth 8 "rgb:$(echo "$data" | base64 -d)" "$pics/image-$1.png"
+    if [ "$kind" != png ]; then
+        magick -size "${w}x$h" -depth 8 "$kind:$(echo "$data" | base64 -d)" "$pics/image-$1.png"
     else
         echo "$w" | base64 -d >"$pics/image-$1.png"
     fi
 }
-# pixel x,y of image $1 as r,g,b
-pixel() { magick "$pics/image-$1.png" -format "%[fx:round(255*p{$2}.r)],%[fx:round(255*p{$2}.g)],%[fx:round(255*p{$2}.b)]" info:; }
+# pixel x,y of image $1 as r,g,b,a, from its hex, which names no alpha in an image without it,
+# where ImageMagick's fx would give one of the colors for the alpha
+pixel() {
+    hex=$(magick "$pics/image-$1.png" -format "%[hex:p{$2}]" info:)
+    [ ${#hex} -eq 6 ] && hex=${hex}FF
+    printf '%d,%d,%d,%d' "0x$(echo "$hex" | cut -c1-2)" "0x$(echo "$hex" | cut -c3-4)" \
+        "0x$(echo "$hex" | cut -c5-6)" "0x$(echo "$hex" | cut -c7-8)"
+}
 size() { magick "$pics/image-$1.png" -format '%wx%h' info:; }
-# r,g,b as red, blue or white, within the few steps scaling may take off
+# r,g,b,a as clear, red, lime, blue or white, within the few steps scaling may take off
 hue() {
     echo "$1" | awk -F, '{ hi = 250; lo = 5
-        if ($1 >= hi && $2 <= lo && $3 <= lo) print "red"
+        if ($4 <= lo) print "clear"
+        else if ($4 < hi) print $0
+        else if ($1 >= hi && $2 <= lo && $3 <= lo) print "red"
         else if ($1 <= lo && $2 >= hi && $3 <= lo) print "lime"
         else if ($1 <= lo && $2 <= lo && $3 >= hi) print "blue"
         else if ($1 >= hi && $2 >= hi && $3 >= hi) print "white"
@@ -197,6 +207,8 @@ $(grep -a -o -E '.{0,24}"1;1;[0-9]+;[0-9]+.{0,8}' "$out" | head -2 | od -c | hea
     printf j >&3
     for _ in $(seq 100); do [ "$(sixels)" -ge 4 ] && break; sleep 0.1; done
     [ "$(sixels)" -eq 4 ] || fail "the viewer drew $(sixels) sixel images, not 4"
+    # each on a cleared screen, as its transparent pixels would let the image before show
+    [ "$(grep -a -o -F "$(printf '\033[2J\033P')" "$out" | wc -l)" -eq 4 ] || fail "a sixel image came without the screen cleared first"
     # chafa ran for the red image, the blue one ahead, and the lime one: j showed blue's frame twice
     [ "$(wc -l <"$pics/chafa-runs") $(grep -c -e '-ahead$' "$pics/chafa-runs")" = "3 1" ] ||
         fail "chafa made $(wc -l <"$pics/chafa-runs") frames, not 3, one ahead: $(cat "$pics/chafa-runs")"
@@ -228,7 +240,8 @@ elif [ "$mode" = tmux ]; then
     [ "$shown" -lt "$hidden" ] || fail "the red image's placement went at byte $hidden, before tmux drew the blue one at $shown"
 else
     drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask whether the terminal shows kitty graphics"
-    if [ "$mode" = kitty ]; then files='EBADF:Failed to read image file' medium=png; else files=OK medium=file; fi
+    # the red image covers its canvas, so a file holds it as RGB, without alpha
+    if [ "$mode" = kitty ]; then files='EBADF:Failed to read image file' medium=png; else files=OK medium=rgb; fi
     printf '\033_Gi=31;OK\033\\\033_Gi=32;%s\033\\\033[?62;22c' "$files" >&3 # herdr's answers
     if [ "$mode" = kitty-budget ]; then
         drawn -F "$(printf '\033_Ga=t,')" "the viewer did not send the next image ahead"
@@ -251,8 +264,9 @@ else
     drawn -F "$(printf '\033_Ga=t,')" "the viewer did not send the next image ahead"
     blue=$(last a=t)
     picture "$blue"
-    [ "$(size "$blue") $(hue "$(pixel "$blue" 400,232)") $(hue "$(pixel "$blue" 5,5)")" = "800x464 blue white" ] ||
-        fail "the blue image went as $(size "$blue") $(pixel "$blue" 400,232) $(pixel "$blue" 5,5), not as 800x464 pixels with blue amid white"
+    # around the image, the terminal's own background shows
+    [ "$(size "$blue") $(hue "$(pixel "$blue" 400,232)") $(hue "$(pixel "$blue" 5,5)")" = "800x464 blue clear" ] ||
+        fail "the blue image went as $(size "$blue") $(pixel "$blue" 400,232) $(pixel "$blue" 5,5), not as 800x464 pixels with blue amid clear ones"
     printf j >&3
     drawn -F "$(printf '\033_Ga=p,i=%s,' "$blue")" "j did not show the blue image sent ahead"
     drawn -F 2-blue.png "j did not name the second image"
@@ -267,7 +281,8 @@ else
     sends a=T 2 "the viewer did not send the image the terminal dropped again"
     blue=$(last a=T)
     picture "$blue"
-    [ "$(hue "$(pixel "$blue" 400,232)")" = blue ] || fail "the viewer sent $(pixel "$blue" 400,232) in place of the blue image"
+    [ "$(hue "$(pixel "$blue" 400,232)") $(hue "$(pixel "$blue" 5,5)")" = "blue clear" ] ||
+        fail "the viewer sent $(pixel "$blue" 400,232) amid $(pixel "$blue" 5,5) in place of the blue image amid clear pixels"
     [ "$(grep -a -o -F "$(printf '\033_Ga=d,d=A,')" "$out" | wc -l)" -eq 1 ] ||
         fail "the viewer deleted every image on the screen after the first frame, freeing those it kept"
     magick -size 2000x1160 xc:lime "$pics/1-red.png"
@@ -283,7 +298,8 @@ before="$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)"
 printf m >&3
 bar '*1 |' "m did not mark the image"
 # the mark, on the last image, changed only the status bar, which goes without the image
-[ "$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)" = "$before" ] || fail "the mark sent or placed an image again"
+[ "$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)" = "$before" ] ||
+    fail "the mark sent or placed an image again: transmissions, images sent ahead, placements and sixels went from $before to $(sent a=T) $(sent a=t) $(sent a=p) $(sixels)"
 kill -TERM "$(cat "$pics/pid")"
 wait "$session" || fail "SIGTERM did not end the viewer cleanly"
 if grep -a -q 'the terminal mode changed' "$out"; then fail "the viewer left the terminal in another mode"; fi

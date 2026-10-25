@@ -330,6 +330,22 @@ struct RegressionChecks {
                && (0..<6).map { decodedPixels[$0] & 0xff_ffff } == colors.map { $0 & 0xff_ffff },
                "a PNG frame keeps its pixels")
         imlib_free_image()
+        // and with alpha, as a frame the image does not cover, its transparent pixels among them
+        guard let clearIn = imlib_create_image(3, 2) else { fatalError("no image") }
+        imlib_context_set_image(clearIn)
+        imlib_image_set_has_alpha(1)
+        let clearColors: [UInt32] = [0x0000_0000, 0xffff_0000, 0x8000_ff00, 0xff00_00ff, 0x0000_0000, 0xff12_3456]
+        let clearWritable = imlib_image_get_data()!
+        for (i, color) in clearColors.enumerated() { clearWritable[i] = color }
+        imlib_image_put_back_data(clearWritable)
+        try TerminalUI.png(of: clearIn, alpha: true)!.write(to: frameURL)
+        imlib_free_image()
+        guard let clearOut = imlib_load_image_immediately_without_cache(frameURL.path) else { fatalError("libpng rejects the RGBA PNG") }
+        imlib_context_set_image(clearOut)
+        let clearDecoded = imlib_image_get_data_for_reading_only()!
+        assert(imlib_image_has_alpha() != 0 && (0..<6).map { clearDecoded[$0] } == clearColors,
+               "a PNG frame with alpha keeps its pixels and their alpha: \((0..<6).map { String(clearDecoded[$0], radix: 16) })")
+        imlib_free_image()
 
         // A revisit takes the decoded image from Imlib2's cache while the file's time stays, which an
         // hour ahead a rewrite's ctime cannot pass; a reload, an invalidation and a new time read the file.
