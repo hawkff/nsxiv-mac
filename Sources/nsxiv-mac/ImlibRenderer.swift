@@ -334,15 +334,52 @@ final class ImlibRenderer {
     }
 
     private func renderImage(_ canvas: Imlib_Image, width: Int, height: Int, scale: Double) {
-        guard let shown else {
-            if let text = viewer.errorText, let face = loadFont(scale: scale) {
+        drawImage(shown, view: viewer.viewport, errorText: viewer.errorText, into: canvas, width: width, height: height,
+                  scale: scale)
+    }
+
+    // A still image other than the current one, as it will show once it is: the terminal draws
+    // the next image while the viewer waits for a key. peek's image goes back with release, and
+    // stays in Imlib2's cache for loadImage; an animation gives nil.
+    func peek(_ url: URL) -> (image: Imlib_Image, size: CGSize)? {
+        guard let image = imlib_load_image_frame(url.path, 1) else { return nil }
+        imlib_context_set_image(image)
+        imlib_image_set_changes_on_disk()
+        var info = Imlib_Frame_Info()
+        imlib_image_get_frame_info(&info)
+        guard info.frame_count <= 1 || info.frame_flags & IMLIB_IMAGE_ANIMATED == 0 else {
+            imlib_free_image()
+            return nil
+        }
+        return (image, CGSize(width: Int(imlib_image_get_width()), height: Int(imlib_image_get_height())))
+    }
+
+    func release(_ image: Imlib_Image) {
+        imlib_context_set_image(image)
+        imlib_free_image()
+    }
+
+    // the image view of image, unturned, with the current gamma and contrast
+    func drawStill(_ image: Imlib_Image, view: Viewport, into canvas: Imlib_Image, width: Int, height: Int,
+                   scale: Double) {
+        imlib_context_set_image(canvas)
+        imlib_image_set_has_alpha(0)
+        imlib_context_set_color_modifier(nil)
+        imlib_context_set_operation(IMLIB_OP_COPY)
+        fill(background, 0, 0, width, height)
+        drawImage(image, view: view, errorText: nil, into: canvas, width: width, height: height, scale: scale)
+    }
+
+    private func drawImage(_ image: Imlib_Image?, view: Viewport, errorText: String?, into canvas: Imlib_Image,
+                           width: Int, height: Int, scale: Double) {
+        guard let shown = image else {
+            if let text = errorText, let face = loadFont(scale: scale) {
                 imlib_context_set_font(face)
                 let size = textSize(text)
                 drawText(text, x: (width - size.width) / 2, y: (height - size.height) / 2)
             }
             return
         }
-        let view = viewer.viewport
         let r = view.imageRect
         let s = CGFloat(scale), w = CGFloat(width), h = CGFloat(height)
         let dx = r.minX * s, dy = h - r.maxY * s, z = view.zoom * s // the canvas counts y downward

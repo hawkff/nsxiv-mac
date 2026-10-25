@@ -81,6 +81,8 @@ jobs:
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac symbols
       - name: Run in a terminal with no display that shows kitty graphics
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty
+      - name: Run in a terminal with no display that shows kitty graphics from the viewer's files
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty-files
       - uses: actions/upload-artifact@v4
         if: always()
         with:

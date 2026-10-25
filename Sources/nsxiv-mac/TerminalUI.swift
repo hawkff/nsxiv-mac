@@ -7,20 +7,43 @@ import Foundation
 // as kitty, Ghostty, WezTerm or a herdr pane in one of them, gets the view as an image at its
 // own pixels; any other gets it from chafa as colored symbols, one per cell. Keys arrive as the
 // bytes the terminal sends for them.
+//
+// A kitty terminal keeps the images it gets, and shows one again for a command of a few dozen
+// bytes: the frames of the last views stay there, and while the viewer waits for a key it
+// sends the next and the previous image ahead, so moving to them, or back to an earlier view,
+// takes microseconds. A terminal on the same machine reads each new frame as raw pixels from a
+// file in /tmp, a RAM disk on most systems; a remote one gets it as PNG through the terminal.
 final class TerminalUI: ViewerUI {
     private let viewer: Viewer
     private let renderer: ImlibRenderer
     private let tty: Int32
     private let kitty: Bool
+    private let imageFiles: String? // the directory of frames the terminal reads itself
     private let chafa: [String] // the command, without the size and the file
-    private let frame: String // the drawn view as a PNG file, for chafa or the terminal
+    private let frame: String // the drawn view as a PNG file, for chafa
     private var canvas: Imlib_Image?
     private var canvasPixels = (width: 0, height: 0)
     private var cols = 80
     private var rows = 24
     private var cell = (width: 8.0, height: 16.0) // pixels, where the terminal says; else the usual 1:2 shape
-    private var shownImage = 0 // the kitty image on screen, 1 or 2; 0 when there may be others
     private var imageDirty = true // false when only the status bar changed since the last frame
+
+    // what decides the pixels of a frame of the image view, to show it again without drawing it
+    private struct FrameKey: Hashable {
+        let path: String
+        let frame: Int, rotation: Int, flipH: Bool, flipV: Bool, gamma: Int, contrast: Int
+        let x: CGFloat, y: CGFloat, zoom: CGFloat, antialias: Bool, alphaLayer: Bool
+        let width: Int, height: Int // the frame's pixels
+    }
+    private var kept: [FrameKey: (id: UInt32, bytes: Int)] = [:] // frames the terminal holds
+    private var keptOrder: [FrameKey] = [] // least recently shown first
+    private var shownImage: UInt32 = 0 // the kitty image on screen; 0 when other programs may have left some
+    private var shownKey: FrameKey?
+    private var lastImageID: UInt32 = 0
+    private var lastIndex = 0 // of the image shown, for the way the viewer is going
+    private var direction = 1
+    private var prefetch: DispatchWorkItem?
+    private var symbols: [FrameKey: [UInt8]] = [:] // chafa's last frames
     private var redrawDue: DispatchTime?
     private var sources: [DispatchSourceProtocol] = []
     private var cutOff: [UInt8] = [] // an escape sequence the last read ended inside
@@ -28,7 +51,7 @@ final class TerminalUI: ViewerUI {
     private let probeInput: [UInt8] // the probe's answers, which the key parser skips, and keys typed meanwhile
 
     // what atexit puts back
-    private static var saved: (tty: Int32, mode: termios, frame: String, kitty: Bool)?
+    private static var saved: (tty: Int32, mode: termios, frame: String, kitty: Bool, imageFiles: String?)?
 
     // nil without a terminal, and without chafa in a terminal that cannot show images, which
     // it warns about
@@ -48,6 +71,9 @@ final class TerminalUI: ViewerUI {
         }
         close(fd)
         let frame = template.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+        // the terminal reads and deletes only files in a temporary directory, with this in the path
+        var directory = Array("/tmp/tty-graphics-protocol-nsxiv-XXXXXX".utf8CString)
+        let imageFiles = mkdtemp(&directory).map { String(cString: $0) }
         // a kill, or a closed terminal, ends the viewer as q does, once the main queue runs; ignored
         // from here, a signal during the probe cannot end the viewer with the terminal still raw
         var stops: [DispatchSourceProtocol] = []
@@ -58,12 +84,16 @@ final class TerminalUI: ViewerUI {
             source.resume()
             stops.append(source)
         }
-        Self.saved = (tty, mode, frame, false)
+        Self.saved = (tty, mode, frame, false, imageFiles)
         atexit { TerminalUI.restoreTerminal() }
         Self.enter()
-        let probe = Self.probeKittyGraphics(tty)
-        let kitty = probe.shows
+        let probe = Self.probeKittyGraphics(tty, files: imageFiles)
+        let kitty = probe.kitty
         Self.saved?.kitty = kitty
+        if !probe.files, let imageFiles {
+            try? FileManager.default.removeItem(atPath: imageFiles)
+            Self.saved?.imageFiles = nil
+        }
         var chafa: [String] = []
         if !kitty {
             guard let about = Self.output(of: ["chafa", "--version"]) else {
@@ -83,9 +113,11 @@ final class TerminalUI: ViewerUI {
         self.viewer = viewer
         self.tty = tty
         self.kitty = kitty
+        self.imageFiles = probe.files ? imageFiles : nil
         self.chafa = chafa
         self.frame = frame
         probeInput = probe.input
+        lastImageID = UInt32(getpid() & 0xffff) << 8 // unlike another viewer's in the same terminal
         renderer = ImlibRenderer(viewer: viewer)
         renderer.drawsBar = false // the terminal's last line shows it
 
@@ -107,16 +139,27 @@ final class TerminalUI: ViewerUI {
         dispatchMain()
     }
 
-    // -o and Q print to the terminal once it is back
-    func willQuit() { Self.restoreTerminal() }
+    // -o and Q print to the terminal once it is back, without the frames it kept
+    func willQuit() {
+        Self.writeAll(tty, Array(kept.values.map { Self.delete($0.id) }.joined().utf8))
+        Self.restoreTerminal()
+    }
 
     // the handler gets the terminal as the viewer found it, for its prompts and its output
-    func keyHandlerWillRun() { Self.leave() }
+    func keyHandlerWillRun() {
+        Self.writeAll(tty, Array(kept.values.map { Self.delete($0.id) }.joined().utf8))
+        Self.leave()
+    }
 
     func keyHandlerDidRun() {
         Self.enter()
-        shownImage = 0 // the handler may have left images of its own
-        setNeedsRedraw(image: true) // the alternate screen comes back empty
+        // the alternate screen comes back empty, without the images it held, and the handler may
+        // have left images of its own
+        shownImage = 0
+        shownKey = nil
+        kept = [:]
+        keptOrder = []
+        setNeedsRedraw(image: true)
     }
 
     // raw keys and the alternate screen, for as long as the viewer has the terminal
@@ -141,9 +184,10 @@ final class TerminalUI: ViewerUI {
     }
 
     private static func restoreTerminal() {
-        guard let frame = Self.saved?.frame else { return }
+        guard let saved = Self.saved else { return }
         leave()
-        unlink(frame)
+        unlink(saved.frame)
+        if let imageFiles = saved.imageFiles { try? FileManager.default.removeItem(atPath: imageFiles) }
         Self.saved = nil
     }
 
@@ -154,9 +198,14 @@ final class TerminalUI: ViewerUI {
 
     // A terminal with kitty graphics answers a query for a one-pixel image with OK, before the
     // device attributes any terminal reports; one that never answers gets symbols after a second.
+    // A second query, for the pixel in a file, tells whether the terminal reads the viewer's files.
     // Everything read meanwhile comes back too, for the keys typed during the probe.
-    private static func probeKittyGraphics(_ tty: Int32) -> (shows: Bool, input: [UInt8]) {
-        writeAll(tty, Array("\u{1b}_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\u{1b}\\\u{1b}[c".utf8))
+    private static func probeKittyGraphics(_ tty: Int32, files: String?) -> (kitty: Bool, files: Bool, input: [UInt8]) {
+        var query = "\u{1b}_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\u{1b}\\"
+        if let files, FileManager.default.createFile(atPath: files + "/probe", contents: Data([0, 0, 0])) {
+            query += "\u{1b}_Gi=32,s=1,v=1,a=q,t=t,f=24;\(Data((files + "/probe").utf8).base64EncodedString())\u{1b}\\"
+        }
+        writeAll(tty, Array((query + "\u{1b}[c").utf8))
         var reply: [UInt8] = []
         let deadline = Date().addingTimeInterval(1)
         while deadline.timeIntervalSinceNow > 0 {
@@ -166,45 +215,175 @@ final class TerminalUI: ViewerUI {
             let n = read(tty, &bytes, bytes.count)
             guard n > 0 else { break }
             reply += bytes[..<n]
-            if let shows = kittyGraphics(in: reply) { return (shows, reply) }
+            if let answer = kittyGraphics(in: reply) { return (answer.kitty, answer.files, reply) }
         }
-        return (false, reply)
+        return (false, false, reply)
     }
 
-    // what a reply to that query says; nil until the device attributes end it
-    static func kittyGraphics(in reply: [UInt8]) -> Bool? {
+    // what the replies to those queries say; nil until the device attributes end them
+    static func kittyGraphics(in reply: [UInt8]) -> (kitty: Bool, files: Bool)? {
         let text = String(decoding: reply, as: UTF8.self)
         guard let attributes = text.range(of: "\u{1b}[?"), text[attributes.upperBound...].contains("c") else { return nil }
-        return text[..<attributes.lowerBound].contains("\u{1b}_Gi=31;OK")
+        let answers = text[..<attributes.lowerBound]
+        return (answers.contains("\u{1b}_Gi=31;OK"), answers.contains("\u{1b}_Gi=32;OK"))
     }
 
-    // a PNG as a kitty image at the cursor, scaled to cols by rows cells, in the protocol's chunks
-    // of at most 4096 bytes of base64; q=2 keeps the terminal's answers from arriving as keys
-    static func kittyImage(_ png: Data, id: Int, cols: Int, rows: Int) -> [UInt8] {
+    // the kitty images that a reply says are gone, as when the terminal needed their room
+    static func missingImages(in bytes: [UInt8]) -> [UInt32] {
+        String(decoding: bytes, as: UTF8.self).components(separatedBy: "\u{1b}_Gi=").dropFirst().compactMap { reply in
+            guard let end = reply.range(of: "\u{1b}\\"), !reply[..<end.lowerBound].hasSuffix(";OK") else { return nil }
+            return UInt32(reply.prefix { $0.isNumber })
+        }
+    }
+
+    // a PNG as a kitty image, in the protocol's chunks of at most 4096 bytes of base64; the
+    // keys go on the first. q=2 keeps the terminal's answers from arriving as keys.
+    static func kittyImage(_ png: Data, keys: String) -> [UInt8] {
         let payload = [UInt8](png.base64EncodedData())
         var out: [UInt8] = []
         var start = 0
         repeat {
             let end = min(start + 4096, payload.count)
             let more = end < payload.count ? 1 : 0
-            let keys = start == 0 ? "a=T,f=100,t=d,i=\(id),q=2,C=1,c=\(cols),r=\(rows),m=\(more)" : "m=\(more),q=2"
-            out += Array("\u{1b}_G\(keys);".utf8) + payload[start..<end] + Array("\u{1b}\\".utf8)
+            let chunkKeys = start == 0 ? "\(keys),f=100,t=d,q=2,m=\(more)" : "m=\(more),q=2"
+            out += Array("\u{1b}_G\(chunkKeys);".utf8) + payload[start..<end] + Array("\u{1b}\\".utf8)
             start = end
         } while start < payload.count
         return out
     }
 
-    // the next frame as a kitty image; the one it replaces goes once it is covered, so the
-    // screen never shows a gap
-    // shortcut: every frame goes whole, so an animation plays slowly over a slow link; kitty's
-    // animation frames would send only what changed, if animations there matter
-    private func kittyFrame(_ png: Data) -> [UInt8] {
-        let id = shownImage == 1 ? 2 : 1
+    // The canvas sent to the terminal as image id: as raw RGB in a file the terminal reads and
+    // deletes itself, or as PNG through the terminal. With place, it also shows at the top left,
+    // scaled to the image rows, as placement 1.
+    private func transmit(_ canvas: Imlib_Image, id: UInt32, place: Bool) -> [UInt8]? {
+        let keys = place ? "a=T,i=\(id),p=1,C=1,c=\(cols),r=\(imageRows)" : "a=t,i=\(id)"
+        guard let imageFiles else { return Self.png(of: canvas).map { Self.kittyImage($0, keys: keys) } }
+        imlib_context_set_image(canvas)
+        let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
+        guard let argb = imlib_image_get_data_for_reading_only() else { return nil }
+        let rgb = [UInt8](unsafeUninitializedCapacity: 3 * width * height) { rgb, count in
+            for i in 0..<width * height {
+                let p = argb[i]
+                rgb[3 * i] = UInt8(truncatingIfNeeded: p >> 16)
+                rgb[3 * i + 1] = UInt8(truncatingIfNeeded: p >> 8)
+                rgb[3 * i + 2] = UInt8(truncatingIfNeeded: p)
+            }
+            count = 3 * width * height
+        }
+        let path = "\(imageFiles)/\(id)"
+        let fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return nil }
+        Self.writeAll(fd, rgb)
+        close(fd)
+        return Array("\u{1b}_G\(keys),f=24,s=\(width),v=\(height),t=t,q=2;\(Data(path.utf8).base64EncodedString())\u{1b}\\".utf8)
+    }
+
+    private static func delete(_ id: UInt32) -> String { "\u{1b}_Ga=d,d=I,i=\(id),q=2\u{1b}\\" }
+
+    // An id no kept frame uses, below 2^24, as tmux's placeholders carry ids in a 24-bit color
+    private func newImageID() -> UInt32 {
+        let used = Set(kept.values.map(\.id))
+        repeat {
+            lastImageID = lastImageID % 0xff_ffff + 1
+        } while used.contains(lastImageID) || lastImageID == shownImage
+        return lastImageID
+    }
+
+    // The terminal holds what the frames the viewer kept take as RGBA: herdr keeps 64 MiB a pane.
+    // A kept frame shows again by placement alone; the one it replaces loses its placement only.
+    private static let keptBudget = 56 << 20
+
+    private func keep(_ key: FrameKey, id: UInt32, bytes: Int) -> [UInt8] {
+        kept[key] = (id, bytes)
+        keptOrder.removeAll { $0 == key }
+        keptOrder.append(key)
+        var out = ""
+        var total = kept.values.reduce(0) { $0 + $1.bytes }
+        while total > Self.keptBudget, let oldest = keptOrder.first(where: { $0 != key && $0 != shownKey }),
+              let frame = kept.removeValue(forKey: oldest) {
+            keptOrder.removeAll { $0 == oldest }
+            total -= frame.bytes
+            out += Self.delete(frame.id)
+        }
+        return Array(out.utf8)
+    }
+
+    // The view, from a kept frame or a new one, in place of what the screen shows: what is there
+    // loses its placement once the new frame covers it, or goes entirely when it was not kept
+    private func kittyFrame(_ key: FrameKey?) -> [UInt8]? {
         var out = Array((shownImage == 0 ? Self.deleteImages : "").utf8) // what other programs left
-        out += Self.kittyImage(png, id: id, cols: cols, rows: imageRows)
-        if shownImage != 0 { out += Array("\u{1b}_Ga=d,d=I,i=\(shownImage),q=2\u{1b}\\".utf8) }
+        let id: UInt32
+        if let key, let frame = kept[key] {
+            id = frame.id
+            keptOrder.removeAll { $0 == key }
+            keptOrder.append(key)
+            // q=1 leaves an answer when the terminal dropped the image, so it goes again
+            out += Array("\u{1b}_Ga=p,i=\(id),p=1,C=1,q=1,c=\(cols),r=\(imageRows)\u{1b}\\".utf8)
+        } else {
+            id = newImageID()
+            guard let canvas = drawCanvas(), let sent = transmit(canvas, id: id, place: true) else { return nil }
+            out += sent
+            if let key { out += keep(key, id: id, bytes: 4 * canvasPixels.width * canvasPixels.height) }
+        }
+        if shownImage != 0, shownImage != id {
+            let keptShown = kept.values.contains { $0.id == shownImage }
+            out += Array((keptShown ? "\u{1b}_Ga=d,d=i,i=\(shownImage),p=1,q=2\u{1b}\\" : Self.delete(shownImage)).utf8)
+        }
         shownImage = id
+        shownKey = key
         return out
+    }
+
+    // The key of the current view, nil in the grid and without an image
+    private func currentKey() -> FrameKey? {
+        guard !viewer.thumbnailMode, viewer.image != nil, let path = viewer.currentEntry?.path else { return nil }
+        let pixels = framePixels(viewer.viewport, image: true)
+        return key(path: path, frame: viewer.frameIndex, rotation: viewer.rotation, flipH: viewer.flipH,
+                   flipV: viewer.flipV, view: viewer.viewport, pixels: pixels)
+    }
+
+    private func key(path: String, frame: Int, rotation: Int, flipH: Bool, flipV: Bool, view: Viewport,
+                     pixels: (width: Int, height: Int, scale: Double)) -> FrameKey {
+        FrameKey(path: path, frame: frame, rotation: rotation, flipH: flipH, flipV: flipV, gamma: viewer.gamma,
+                 contrast: viewer.contrast, x: view.imageRect.minX, y: view.imageRect.minY, zoom: view.zoom,
+                 antialias: view.antialias, alphaLayer: view.alphaLayer, width: pixels.width, height: pixels.height)
+    }
+
+    // While no key comes, the next image, then the previous one, goes to the terminal in its
+    // first view, each in a turn of the main queue of its own, unless a key is waiting by then.
+    // shortcut: Imlib2 decodes on the main queue, so a key that comes during a prefetch waits
+    // for it, and images over 25 megapixels are left out; a second process would decode alongside
+    private func schedulePrefetch() {
+        prefetch?.cancel()
+        guard kitty, !viewer.thumbnailMode else { return }
+        let work = DispatchWorkItem { [unowned self] in self.prefetchNeighbor() }
+        prefetch = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    }
+
+    private func prefetchNeighbor() {
+        var ready = pollfd(fd: tty, events: Int16(POLLIN), revents: 0)
+        guard !imageDirty, poll(&ready, 1, 0) == 0 else { return } // a key or a frame comes first
+        for index in [viewer.current + direction, viewer.current - direction] where viewer.files.indices.contains(index) {
+            let entry = viewer.files[index]
+            guard !kept.keys.contains(where: { $0.path == entry.path }), let next = renderer.peek(entry.url) else { continue }
+            defer { renderer.release(next.image) }
+            guard next.size.width * next.size.height <= 25_000_000 else { continue }
+            var view = viewer.viewport
+            view.setImageSize(next.size, resetView: true) // as loading it will
+            let pixels = framePixels(view, image: true)
+            let shownBytes = kept.values.first { $0.id == shownImage }?.bytes ?? 0
+            guard shownBytes + 4 * pixels.width * pixels.height <= Self.keptBudget else { return }
+            let key = key(path: entry.path, frame: 0, rotation: 0, flipH: false, flipV: false, view: view, pixels: pixels)
+            guard let canvas = makeCanvas(pixels.width, pixels.height) else { return }
+            renderer.drawStill(next.image, view: view, into: canvas, width: pixels.width, height: pixels.height,
+                               scale: pixels.scale)
+            let id = newImageID()
+            guard let sent = transmit(canvas, id: id, place: false) else { return }
+            Self.writeAll(tty, sent + keep(key, id: id, bytes: 4 * pixels.width * pixels.height))
+            schedulePrefetch()
+            return
+        }
     }
 
     // MARK: - keys
@@ -220,6 +399,8 @@ final class TerminalUI: ViewerUI {
     // the keys in what the terminal sent; a sequence it ends inside waits for the next bytes
     private func take(_ bytes: ArraySlice<UInt8>) {
         cutOffTimeout?.cancel()
+        prefetch?.cancel() // the next frame first; prefetching resumes after it
+        for id in Self.missingImages(in: cutOff + bytes) { forget(id) }
         let parsed = Self.keys(in: cutOff + bytes)
         cutOff = parsed.rest
         handle(parsed.keys)
@@ -348,7 +529,36 @@ final class TerminalUI: ViewerUI {
 
     func imageChanged() {
         renderer.imageChanged()
+        if viewer.current != lastIndex {
+            direction = viewer.current > lastIndex ? 1 : -1
+            lastIndex = viewer.current
+        }
         setNeedsRedraw(image: true)
+    }
+
+    // a frame the terminal no longer holds, as a kept one it dropped for room, goes again if shown
+    private func forget(_ id: UInt32) {
+        for (key, frame) in kept where frame.id == id {
+            kept[key] = nil
+            keptOrder.removeAll { $0 == key }
+        }
+        if id == shownImage {
+            shownImage = 0
+            shownKey = nil
+            setNeedsRedraw(image: true)
+        }
+    }
+
+    // kept frames that no longer match, as of a file that changed or of another terminal size
+    private func forgetFrames(where stale: (FrameKey) -> Bool) {
+        var out = ""
+        for (key, frame) in kept where stale(key) {
+            kept[key] = nil
+            keptOrder.removeAll { $0 == key }
+            if frame.id != shownImage { out += Self.delete(frame.id) } // the shown one goes once replaced
+        }
+        symbols = symbols.filter { !stale($0.key) }
+        if !out.isEmpty { Self.writeAll(tty, Array(out.utf8)) }
     }
 
     func viewChanged() { setNeedsRedraw(image: true) }
@@ -366,6 +576,7 @@ final class TerminalUI: ViewerUI {
                 cell = (Double(Int(size.ws_xpixel) / cols), Double(Int(size.ws_ypixel) / rows))
             }
         }
+        forgetFrames { _ in true }
         viewer.resizeCanvas(canvasSize)
         viewer.resizeGrid(canvasSize)
         setNeedsRedraw(image: true)
@@ -378,6 +589,8 @@ final class TerminalUI: ViewerUI {
 
     func invalidateThumbnails(_ entries: [FileEntry]) {
         renderer.invalidateThumbnails(entries)
+        let paths = Set(entries.map(\.path))
+        forgetFrames { paths.contains($0.path) }
         setNeedsRedraw(image: true)
     }
 
@@ -398,7 +611,7 @@ final class TerminalUI: ViewerUI {
     // A frame costs a chafa run or a whole image, so one in which only the status bar changed, as
     // after a mark, rewrites just the bar.
     // shortcut: thumbnails that come in one at a time redraw the grid at most every 0.3 s
-    private func setNeedsRedraw(image: Bool, after delay: Double = 0.01) {
+    private func setNeedsRedraw(image: Bool, after delay: Double = 0) {
         if image { imageDirty = true }
         let due = DispatchTime.now() + delay
         if let redrawDue, redrawDue <= due { return }
@@ -418,28 +631,45 @@ final class TerminalUI: ViewerUI {
             imageDirty = false
             // a frame that could not be drawn clears the screen, so no other image stays under this name
             if cols > 0, imageRows > 0 {
-                let drawn = drawCanvas().flatMap { kitty ? Self.png(of: $0).map { kittyFrame($0) } : drawnRows($0) }
+                let drawn = kitty ? kittyFrame(currentKey()) : symbolRows(currentKey())
                 if drawn == nil { // the next redraw, even of the bar alone, tries again
                     shownImage = 0
+                    shownKey = nil
                     imageDirty = true
                 }
                 out += drawn ?? Array("\(kitty ? Self.deleteImages : "")\u{1b}[2J".utf8)
             } else if shownImage != 0 { // no row left for an image, as in a one-row terminal with the bar
                 out += Array(Self.deleteImages.utf8)
                 shownImage = 0
+                shownKey = nil
             }
         }
         if viewer.barVisible, rows > 0 { out += Array("\u{1b}[\(rows);1H\u{1b}[0;7m\(statusLine())\u{1b}[0m".utf8) }
         out += Array("\u{1b}[H\u{1b}[?2026l".utf8) // home, where a stray warning cannot scroll the screen
         Self.writeAll(tty, out)
+        if !imageDirty { schedulePrefetch() }
     }
 
-    // the view drawn into the canvas, at the terminal's own pixels for a kitty image, at 16 pixels
-    // a row for chafa, which needs no more for its symbols
+    // The pixels a frame of view takes: the terminal's own for a kitty image, 16 a row for chafa,
+    // which needs no more for its symbols. A kitty terminal scales an image up as Imlib2 does,
+    // linearly, so an image shown larger than its pixels goes at those, which it scales itself.
+    private func framePixels(_ view: Viewport, image: Bool) -> (width: Int, height: Int, scale: Double) {
+        var scale = kitty ? cell.height / 16 : 1
+        if kitty, image, view.antialias, view.zoom * scale > 1 { scale = 1 / view.zoom }
+        return (max(1, Int((canvasSize.width * scale).rounded())), max(1, Int((canvasSize.height * scale).rounded())),
+                scale)
+    }
+
+    // the current view drawn into the canvas
     private func drawCanvas() -> Imlib_Image? {
-        let scale = kitty ? cell.height / 16 : 1
-        let width = max(1, Int((canvasSize.width * scale).rounded()))
-        let height = max(1, Int((canvasSize.height * scale).rounded()))
+        let pixels = framePixels(viewer.viewport, image: !viewer.thumbnailMode && viewer.image != nil)
+        guard let canvas = makeCanvas(pixels.width, pixels.height) else { return nil }
+        renderer.render(into: canvas, width: pixels.width, height: pixels.height, scale: pixels.scale)
+        return canvas
+    }
+
+    // the canvas, made anew for another size
+    private func makeCanvas(_ width: Int, _ height: Int) -> Imlib_Image? {
         if canvasPixels.width != width || canvasPixels.height != height {
             if let canvas {
                 imlib_context_set_image(canvas)
@@ -453,17 +683,13 @@ final class TerminalUI: ViewerUI {
                 imlib_image_attach_data_value("compression", nil, 1, nil) // quick to write, read at once
             }
         }
-        guard let canvas else { return nil }
-        renderer.render(into: canvas, width: width, height: height, scale: scale)
         return canvas
     }
 
-    // The canvas as a PNG: 8-bit RGB, each row with the Up filter, zlib at its fastest level.
-    // libpng, which Imlib2 saves with, tries all five filters on every row; for a 2560x1638 frame
-    // that took 306 ms against 116 ms here, for 3% less data.
-    // shortcut: such a frame still takes about 0.25 s to draw and encode and 2.4 MB to send; draw
-    // fewer pixels where the image is upscaled anyway, if larger terminals feel slow
-    static func png(of image: Imlib_Image) -> Data? {
+    // The canvas as a PNG: 8-bit RGB, each row with the Up filter, zlib at its fastest level by
+    // default. libpng, which Imlib2 saves with, tries all five filters on every row; for a
+    // 2560x1638 frame that took 306 ms against 116 ms here, for 3% less data.
+    static func png(of image: Imlib_Image, level: Int32 = Z_BEST_SPEED) -> Data? {
         imlib_context_set_image(image)
         let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
         guard let argb = imlib_image_get_data_for_reading_only() else { return nil }
@@ -491,7 +717,7 @@ final class TerminalUI: ViewerUI {
         }
         var size = compressBound(uLong(rows.count))
         var deflated = [UInt8](repeating: 0, count: Int(size))
-        guard compress2(&deflated, &size, rows, uLong(rows.count), Z_BEST_SPEED) == Z_OK else { return nil }
+        guard compress2(&deflated, &size, rows, uLong(rows.count), level) == Z_OK else { return nil }
         func bigEndian(_ value: Int) -> [UInt8] { withUnsafeBytes(of: UInt32(value).bigEndian, Array.init) }
         var png = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
         func chunk(_ type: String, _ body: ArraySlice<UInt8>) {
@@ -506,14 +732,19 @@ final class TerminalUI: ViewerUI {
         return png
     }
 
-    // the canvas as rows of colored symbols, one per cell, from chafa, which reads it from a file
-    private func drawnRows(_ canvas: Imlib_Image) -> [UInt8]? {
-        imlib_context_set_image(canvas)
-        truncate(frame, 0) // a save that fails leaves chafa no older frame to draw
-        imlib_save_image(frame)
-        guard var drawn = Self.output(of: chafa + ["--size=\(cols)x\(imageRows)", frame]).map({ [UInt8]($0) })
+    // The view as rows of colored symbols, one per cell, from chafa, which reads the canvas from an
+    // uncompressed PNG file, the quickest to write and read. The last views' rows stay for a return.
+    private func symbolRows(_ key: FrameKey?) -> [UInt8]? {
+        if let key, let rows = symbols[key] { return rows }
+        guard let canvas = drawCanvas(), let png = Self.png(of: canvas, level: Z_NO_COMPRESSION),
+              FileManager.default.createFile(atPath: frame, contents: png),
+              var drawn = Self.output(of: chafa + ["--size=\(cols)x\(imageRows)", frame]).map({ [UInt8]($0) })
         else { return nil }
         if drawn.last == 0x0a { drawn.removeLast() } // a newline after the bottom row would scroll the screen
+        if let key {
+            if symbols.count >= 8 { symbols = [:] }
+            symbols[key] = drawn
+        }
         return drawn
     }
 
