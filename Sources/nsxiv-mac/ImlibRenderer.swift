@@ -145,6 +145,11 @@ final class ImlibRenderer {
         -> (frames: [Imlib_Image], delays: [TimeInterval])? {
         let w = first.canvas_w, h = first.canvas_h
         guard w > 0, h > 0, let blank = imlib_create_image(w, h) else { return nil }
+        // shortcut: every frame stays composed in memory, so an animation needing more than 1 GiB
+        // shows its first frame on its canvas as a still; decode frames as they show, as
+        // ImageLoader does on macOS, if such files matter
+        let fits = Double(first.frame_count) * Double(w) * Double(h) * 4 <= Double(1 << 30)
+        if !fits { warn("\(path): too large to animate, showing its first frame") }
         imlib_context_set_image(blank)
         clear(0, 0, w, h)
         imlib_context_set_anti_alias(0)
@@ -154,7 +159,7 @@ final class ImlibRenderer {
         var delays: [TimeInterval] = []
         var previous = Imlib_Frame_Info() // the last frame's disposal and area
         var undo: Imlib_Image? // the canvas before the last frame, kept when that frame asks to be undone
-        for n in 1...first.frame_count {
+        for n in 1...(fits ? first.frame_count : 1) {
             guard let raw = imlib_load_image_frame(path, n) else { break }
             imlib_context_set_image(raw)
             var info = Imlib_Frame_Info()
@@ -194,7 +199,8 @@ final class ImlibRenderer {
             imlib_context_set_image(image)
             imlib_free_image()
         }
-        guard frames.count > 1 else {
+        // a file that promised more frames than it had stays the raw still
+        guard frames.count > 1 || !fits, !frames.isEmpty else {
             for frame in frames {
                 imlib_context_set_image(frame)
                 imlib_free_image()
@@ -243,15 +249,33 @@ final class ImlibRenderer {
         }
     }
 
-    private static func makeThumbnail(_ path: String) -> Imlib_Image? {
+    static func makeThumbnail(_ path: String) -> Imlib_Image? {
         guard let full = imlib_load_image_frame(path, 1) else { return nil }
         imlib_context_set_image(full)
+        var info = Imlib_Frame_Info()
+        imlib_image_get_frame_info(&info)
         let w = imlib_image_get_width(), h = imlib_image_get_height()
+        // an animation's first frame may cover only part of its canvas, where image mode puts it
+        let animated = info.frame_count > 1 && info.frame_flags & IMLIB_IMAGE_ANIMATED != 0
+        let cw = animated && info.canvas_w > 0 ? info.canvas_w : w
+        let ch = animated && info.canvas_h > 0 ? info.canvas_h : h
         // sharp up to the largest grid size on a 2x screen
-        let s = min(1, CGFloat(Config.thumbMaxPixel) / CGFloat(max(w, h, 1)))
+        let s = min(1, CGFloat(Config.thumbMaxPixel) / CGFloat(max(cw, ch, 1)))
+        let scaled = { (n: Int32) in max(1, Int32(CGFloat(n) * s)) }
         imlib_context_set_anti_alias(1)
-        let thumb = imlib_create_cropped_scaled_image(0, 0, w, h, max(1, Int32(CGFloat(w) * s)),
-                                                      max(1, Int32(CGFloat(h) * s)))
+        var thumb: Imlib_Image?
+        if cw == w, ch == h {
+            thumb = imlib_create_cropped_scaled_image(0, 0, w, h, scaled(w), scaled(h))
+        } else if let canvas = imlib_create_image(scaled(cw), scaled(ch)) {
+            imlib_context_set_image(canvas)
+            clear(0, 0, scaled(cw), scaled(ch))
+            imlib_context_set_color_modifier(nil)
+            imlib_context_set_operation(IMLIB_OP_COPY)
+            imlib_blend_image_onto_image(full, 1, 0, 0, w, h, Int32(CGFloat(info.frame_x) * s),
+                                         Int32(CGFloat(info.frame_y) * s), scaled(w), scaled(h))
+            thumb = canvas
+            imlib_context_set_image(full)
+        }
         imlib_free_image_and_decache()
         return thumb
     }

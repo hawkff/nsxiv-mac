@@ -72,17 +72,23 @@ export WAYLAND_DISPLAY=$socket
 
 "$bin" -S 4 "$pics" &
 pid=$!
-sleep 6 # the large image shows from 4 to 8 seconds
-kill -0 "$pid"
 shot=$shots/$compositor-$outputs.png
-grim "$shot"
 
-# the bounding box of each quarter's color, as width height x y; a capture of an XRGB output
-# may carry any alpha
+# the bounding box of each quarter's color, as width height x y, or 1 1 -1 -1 when the color
+# is missing; a capture of an XRGB output may carry any alpha
 box() {
     magick "$shot" -alpha off -fuzz 3% -fill black +opaque "$1" -fill white -opaque "$1" -trim \
-        -format '%w %h %X %Y' info: | tr -d '+'
+        -format '%w %h %X %Y' info: 2>/dev/null | tr -d '+'
 }
+# the large image shows for four seconds once the viewer is up; wait for a screenshot of it in
+# the grown window, as the small window shows each quarter at most 100 pixels wide
+for _ in $(seq 40); do
+    sleep 0.25
+    grim "$shot"
+    set -- $(box magenta)
+    [ "${1:-0}" -gt 100 ] && break
+done
+kill -0 "$pid"
 for color in magenta yellow cyan blue; do
     set -- $(box "$color")
     echo "$color: ${1}x$2 at $3,$4"

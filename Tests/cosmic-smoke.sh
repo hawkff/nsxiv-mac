@@ -62,7 +62,7 @@ for _ in $(seq 40); do
     sleep 0.25
     WAYLAND_DISPLAY=$host grim "$shot"
     set -- $(box magenta)
-    [ "$1" -gt 100 ] && break
+    [ "${1:-0}" -gt 100 ] && break
 done
 kill -0 "$pid"
 for color in magenta yellow cyan blue; do

@@ -62,6 +62,10 @@ expect_inside() {
         >/dev/null || { echo "window left the workspace: $(swaymsg -t get_tree | jq -c '.. | objects |
             select(.app_id == "nsxiv-mac" or .type == "workspace") | [.rect, .deco_rect]')" >&2; exit 1; }
 }
+expect_fullscreen() {
+    mode=$(swaymsg -t get_tree | jq '.. | objects | select(.app_id == "nsxiv-mac") | .fullscreen_mode')
+    [ "$mode" = "$1" ] || { echo "fullscreen mode is $mode, expected $1" >&2; exit 1; }
+}
 # each wtype plugs in a new virtual keyboard; the pause lets the client bind it first
 key() { wtype -s 300 "$@"; }
 
@@ -69,15 +73,36 @@ timeout 60 "$bin" -o "$pics" >"$pics/marked" & # a viewer that misses q fails th
 pid=$!
 sleep 2
 shot 1-image
-key '>' && shot 2-turned && expect_inside
-key j && shot 3-alpha && expect_width 200
-key A && shot 4-checkerboard
-key j && shot 5-animated
-key f && shot 6-fullscreen
-key f && sleep 1
+key '>'
+shot 2-turned
+expect_inside
+key j
+shot 3-alpha
+expect_width 200
+key A
+shot 4-checkerboard
+key j
+shot 5-animated
+# the frames show red, lime and blue for 0.2 s each, so over a second the middle of the image,
+# above the status bar, takes more than one color; sway counts logical pixels, grim physical ones
+at=$(swaymsg -t get_tree | jq -r '.. | objects | select(.app_id == "nsxiv-mac") |
+    "\((.rect.x + .rect.width / 2) * 1.5 | floor),\((.rect.y + .rect.height / 3) * 1.5 | floor)"')
+colors=$(for n in 1 2 3 4; do
+    sleep 0.25
+    grim "$pics/frame-$n.png"
+    magick "$pics/frame-$n.png" -format "%[hex:p{$at}]\n" info:
+done | sort -u | wc -l)
+[ "$colors" -ge 2 ] || { echo "the animation does not play at $at" >&2; exit 1; }
+key f
+shot 6-fullscreen
+expect_fullscreen 1
+key f
+sleep 1
+expect_fullscreen 0
 key g m m -k Return
 sleep 2
-shot 7-grid && expect_inside
+shot 7-grid
+expect_inside
 key -M ctrl x -m ctrl c
 sleep 1
 key q

@@ -15,8 +15,10 @@ final class WaylandUI: ViewerUI {
     private var compositor: OpaquePointer?
     private var shm: OpaquePointer?
     private var wmBase: OpaquePointer?
-    private var seat: OpaquePointer?
-    private var seatVersion: UInt32 = 0
+    private var seat: OpaquePointer? // the seat input comes from
+    // every seat by global name, with the version bound and its devices
+    private var seats: [UInt32: (seat: OpaquePointer, version: UInt32, capabilities: UInt32)] = [:]
+    private var seatVersion: UInt32 { seats.values.first { $0.seat == seat }?.version ?? 0 }
     private var decorations: OpaquePointer?
     private var csd = false // no server-side decorations, as on GNOME: the window draws a title bar
     private var fractionalScaling: OpaquePointer?
@@ -83,7 +85,8 @@ final class WaylandUI: ViewerUI {
     private var swayFrom: CGSize? // the size before a burst of resizes, until sway places the window
 
     private final class Output {
-        var mode = (width: Int32(0), height: Int32(0)) // pixels
+        var mode = (width: Int32(0), height: Int32(0)) // pixels, before the output's rotation
+        var turned = false // a quarter turn, as on a portrait monitor
         var scale: Int32 = 1
     }
 
@@ -169,8 +172,7 @@ final class WaylandUI: ViewerUI {
         case "wl_compositor": compositor = proxy
         case "wl_shm": shm = proxy
         case "wl_seat":
-            seat = proxy
-            seatVersion = min(version, newestVersion)
+            seats[name] = (proxy, min(version, newestVersion), 0)
             wl_seat_add_listener(proxy, Self.seatListener, data)
         case "wl_output":
             outputs[proxy] = Output()
@@ -186,8 +188,20 @@ final class WaylandUI: ViewerUI {
         }
     }
 
-    // an unplugged monitor
+    // an unplugged monitor, or a seat that went
     private func unbind(_ name: UInt32) {
+        if let gone = seats[name] {
+            if gone.seat == seat {
+                seatCapabilities(gone.seat, 0) // lets go of its keyboard and pointer
+                seat = nil
+            }
+            seats[name] = nil
+            if gone.version >= 5 { wl_seat_release(gone.seat) } else { wl_seat_destroy(gone.seat) }
+            if seat == nil, let next = seats.values.first(where: { $0.capabilities & Self.input != 0 }) {
+                seatCapabilities(next.seat, next.capabilities)
+            }
+            return
+        }
         guard let output = outputNames.removeValue(forKey: name) else { return }
         outputs[output] = nil
         enteredOutputs.remove(output)
@@ -195,8 +209,16 @@ final class WaylandUI: ViewerUI {
         scaleChanged()
     }
 
-    // keyboards and mice come and go; a removed one's objects never send events again
-    private func seatCapabilities(_ capabilities: UInt32) {
+    private static let input = WL_SEAT_CAPABILITY_KEYBOARD.rawValue | WL_SEAT_CAPABILITY_POINTER.rawValue
+
+    // keyboards and mice come and go, and so may seats: input comes from one seat, the first with
+    // a keyboard or a pointer, as one user drives the viewer. A removed device's objects never send
+    // events again.
+    private func seatCapabilities(_ from: OpaquePointer?, _ capabilities: UInt32) {
+        guard let from, let name = seats.first(where: { $0.value.seat == from })?.key else { return }
+        seats[name]?.capabilities = capabilities
+        if seat == nil, capabilities & Self.input != 0 { seat = from }
+        guard from == seat else { return }
         let data = Unmanaged.passUnretained(self).toOpaque()
         let hasKeyboard = capabilities & WL_SEAT_CAPABILITY_KEYBOARD.rawValue != 0
         if hasKeyboard, keyboard == nil {
@@ -241,7 +263,9 @@ final class WaylandUI: ViewerUI {
         let fractional = viewport != nil && scale120 != 120 ? Double(scale120) / 120 : nil
         let sizes = outputs.values.map { output -> CGSize in
             let s = fractional ?? Double(max(1, output.scale))
-            return CGSize(width: Double(output.mode.width) / s, height: Double(output.mode.height) / s)
+            let w = Double(output.turned ? output.mode.height : output.mode.width)
+            let h = Double(output.turned ? output.mode.width : output.mode.height)
+            return CGSize(width: w / s, height: h / s)
         }
         return sizes.max { $0.width * $0.height < $1.width * $1.height } ?? CGSize(width: 1920, height: 1080)
     }
@@ -613,10 +637,18 @@ final class WaylandUI: ViewerUI {
         guard csd, states.isDisjoint(with: Self.heldStates) else { return 0 }
         let e: CGFloat = 6, w = CGFloat(size.width), h = CGFloat(size.height)
         var edges: UInt32 = 0
-        if p.y < e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_TOP.rawValue }
-        if p.y >= h - e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM.rawValue }
-        if p.x < e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_LEFT.rawValue }
-        if p.x >= w - e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_RIGHT.rawValue }
+        // in a window narrower than two edges, left and right must not both count: no resize_edge
+        // value means both, and a compositor may end the connection for one it does not know
+        if p.y < e {
+            edges |= XDG_TOPLEVEL_RESIZE_EDGE_TOP.rawValue
+        } else if p.y >= h - e {
+            edges |= XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM.rawValue
+        }
+        if p.x < e {
+            edges |= XDG_TOPLEVEL_RESIZE_EDGE_LEFT.rawValue
+        } else if p.x >= w - e {
+            edges |= XDG_TOPLEVEL_RESIZE_EDGE_RIGHT.rawValue
+        }
         return edges
     }
 
@@ -1030,13 +1062,19 @@ final class WaylandUI: ViewerUI {
         global_remove: { data, _, name in WaylandUI.ui(data).unbind(name) }))
 
     private static let seatListener = make(wl_seat_listener(
-        capabilities: { data, _, capabilities in WaylandUI.ui(data).seatCapabilities(capabilities) },
+        capabilities: { data, seat, capabilities in WaylandUI.ui(data).seatCapabilities(seat, capabilities) },
         name: { _, _, _ in }))
 
     // newer libwayland headers list more events; the bound versions never send those
     private static let outputListener: UnsafeMutablePointer<wl_output_listener> = {
         var l = wl_output_listener()
-        l.geometry = { _, _, _, _, _, _, _, _, _, _ in }
+        l.geometry = { data, output, _, _, _, _, _, _, _, transform in
+            // the odd wl_output_transform values turn by 90 or 270 degrees, mirrored or not
+            let ui = WaylandUI.ui(data)
+            guard let output, let entry = ui.outputs[output], entry.turned != (transform & 1 == 1) else { return }
+            entry.turned.toggle()
+            ui.scaleChanged() // a monitor turned on its side leaves the window other room
+        }
         l.mode = { data, output, flags, width, height, _ in
             guard let output, flags & WL_OUTPUT_MODE_CURRENT.rawValue != 0 else { return }
             WaylandUI.ui(data).outputs[output]?.mode = (width, height)

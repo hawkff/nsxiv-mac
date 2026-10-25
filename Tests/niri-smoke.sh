@@ -69,10 +69,18 @@ expect_size() {
 WAYLAND_DISPLAY=$nested timeout 60 "$bin" "$pics" &
 pid=$!
 sleep 3
-shot 1-tiled && expect_size
-niri msg action fullscreen-window && shot 2-fullscreen
-niri msg action fullscreen-window && shot 3-tiled-again && expect_size
-WAYLAND_DISPLAY=$nested wtype -s 300 j && shot 4-next-image
+shot 1-tiled
+expect_size
+niri msg action fullscreen-window
+shot 2-fullscreen
+niri msg action fullscreen-window
+shot 3-tiled-again
+expect_size
+WAYLAND_DISPLAY=$nested wtype -s 300 j
+shot 4-next-image
+# the viewer names its window after the image it shows
+title=$(niri msg --json windows | jq -r '.[] | select(.app_id == "nsxiv-mac") | .title')
+[ "$title" = 2-plasma.jpg ] || { echo "j showed $title, expected 2-plasma.jpg" >&2; exit 1; }
 niri msg windows
 niri msg action close-window
 wait "$pid" # niri's close ends the viewer; a hang fails the timeout
