@@ -30,11 +30,6 @@ for _ in $(seq 100); do
 done
 [ -S "$XDG_RUNTIME_DIR/wayland-m" ] || { echo "mutter did not start" >&2; cat "$log" >&2; exit 1; }
 
-WAYLAND_DISPLAY=wayland-m "$bin" -S 4 "$pics" &
-pid=$!
-sleep 6 # the large image shows from 4 to 8 seconds
-kill -0 "$pid"
-
 # mutter names each window it constrains, as W1 (title); the viewer's own comes first, its room
 # probes later. For that window: where it asked to go, and where each constraint left it
 viewer() {
@@ -48,6 +43,18 @@ viewer() {
             for (i = 1; i < NF; i++) if ($i == "is") { split($(i + 1), p, ","); split($(i + 2), z, "x"); print p[1], p[2], z[1], z[2] }
         }' "$log"
 }
+
+WAYLAND_DISPLAY=wayland-m "$bin" -S 4 "$pics" &
+pid=$!
+# the large image shows for four seconds once the viewer is up; wait for mutter to place the
+# grown window, then for the rest of that placement's log
+for _ in $(seq 40); do
+    sleep 0.25
+    [ -n "$(viewer placed | awk '$3 > 400')" ] && break
+done
+sleep 0.5
+kill -0 "$pid"
+
 past=$(viewer asked | awk '$3 > 400 && ($1 % 1280 + $3 > 1280 || $2 + $4 > 800)' | head -1)
 final=$(viewer placed | awk '$3 > 400' | tail -1)
 echo "the viewer asked for: $(viewer asked | tr '\n' ';')"

@@ -8,7 +8,7 @@ import Foundation
 // Edit and rebuild to customize.
 enum Config {
     static let appName = "nsxiv-mac"
-    static let appVersion = "0.1.1"
+    static let appVersion = "0.2.0"
 
     // window size before the first image fits it, and the fixed size with -g
     static let winWidth: CGFloat = 800

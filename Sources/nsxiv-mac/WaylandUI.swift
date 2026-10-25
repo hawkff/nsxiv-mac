@@ -83,7 +83,8 @@ final class WaylandUI: ViewerUI {
     private var swayFrom: CGSize? // the size before a burst of resizes, until sway places the window
 
     private final class Output {
-        var mode = (width: Int32(0), height: Int32(0)) // pixels
+        var mode = (width: Int32(0), height: Int32(0)) // pixels, before the output's rotation
+        var turned = false // a quarter turn, as on a portrait monitor
         var scale: Int32 = 1
     }
 
@@ -162,6 +163,9 @@ final class WaylandUI: ViewerUI {
         ]
         guard let newestVersion = newest[interface], let table = nsx_interface(interface),
               interface != "wl_compositor" || version >= 4, // damage_buffer came with 4
+              // shortcut: input comes from the first seat only, as one user drives the viewer;
+              // track each seat if a compositor that offers several ever matters
+              interface != "wl_seat" || seat == nil,
               let raw = wl_registry_bind(registry, name, table, min(version, newestVersion)) else { return }
         let proxy = OpaquePointer(raw)
         let data = Unmanaged.passUnretained(self).toOpaque()
@@ -241,7 +245,9 @@ final class WaylandUI: ViewerUI {
         let fractional = viewport != nil && scale120 != 120 ? Double(scale120) / 120 : nil
         let sizes = outputs.values.map { output -> CGSize in
             let s = fractional ?? Double(max(1, output.scale))
-            return CGSize(width: Double(output.mode.width) / s, height: Double(output.mode.height) / s)
+            let w = Double(output.turned ? output.mode.height : output.mode.width)
+            let h = Double(output.turned ? output.mode.width : output.mode.height)
+            return CGSize(width: w / s, height: h / s)
         }
         return sizes.max { $0.width * $0.height < $1.width * $1.height } ?? CGSize(width: 1920, height: 1080)
     }
@@ -613,10 +619,18 @@ final class WaylandUI: ViewerUI {
         guard csd, states.isDisjoint(with: Self.heldStates) else { return 0 }
         let e: CGFloat = 6, w = CGFloat(size.width), h = CGFloat(size.height)
         var edges: UInt32 = 0
-        if p.y < e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_TOP.rawValue }
-        if p.y >= h - e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM.rawValue }
-        if p.x < e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_LEFT.rawValue }
-        if p.x >= w - e { edges |= XDG_TOPLEVEL_RESIZE_EDGE_RIGHT.rawValue }
+        // in a window narrower than two edges, left and right must not both count: no resize_edge
+        // value means both, and a compositor may end the connection for one it does not know
+        if p.y < e {
+            edges |= XDG_TOPLEVEL_RESIZE_EDGE_TOP.rawValue
+        } else if p.y >= h - e {
+            edges |= XDG_TOPLEVEL_RESIZE_EDGE_BOTTOM.rawValue
+        }
+        if p.x < e {
+            edges |= XDG_TOPLEVEL_RESIZE_EDGE_LEFT.rawValue
+        } else if p.x >= w - e {
+            edges |= XDG_TOPLEVEL_RESIZE_EDGE_RIGHT.rawValue
+        }
         return edges
     }
 
@@ -1036,7 +1050,11 @@ final class WaylandUI: ViewerUI {
     // newer libwayland headers list more events; the bound versions never send those
     private static let outputListener: UnsafeMutablePointer<wl_output_listener> = {
         var l = wl_output_listener()
-        l.geometry = { _, _, _, _, _, _, _, _, _, _ in }
+        l.geometry = { data, output, _, _, _, _, _, _, _, transform in
+            guard let output else { return }
+            // the odd wl_output_transform values turn by 90 or 270 degrees, mirrored or not
+            WaylandUI.ui(data).outputs[output]?.turned = transform & 1 == 1
+        }
         l.mode = { data, output, flags, width, height, _ in
             guard let output, flags & WL_OUTPUT_MODE_CURRENT.rawValue != 0 else { return }
             WaylandUI.ui(data).outputs[output]?.mode = (width, height)

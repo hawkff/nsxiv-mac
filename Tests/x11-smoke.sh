@@ -24,11 +24,20 @@ pid=$!
 sleep 2
 xdotool mousemove 40 40 # without a window manager, keys go to the window under the pointer
 shot 1-image
-xdotool key greater && shot 2-turned
-xdotool key j && shot 3-alpha
-xdotool key A && shot 4-checkerboard
-xdotool key j && shot 5-animated
-xdotool key j && shot 6-long-name
+# with no window manager the window sits at 0,0, and the 640x400 gradient at 100% fills its
+# top: red at the top, blue at the bottom
+[ "$(magick "$shots/1-image.png" -format '%[fx:p{320,5}.r > 0.8 && p{320,5}.b < 0.2 && p{320,394}.b > 0.8 && p{320,394}.r < 0.2]' info:)" = 1 ] ||
+    { echo "the first image is not drawn" >&2; exit 1; }
+xdotool key greater
+shot 2-turned
+xdotool key j
+shot 3-alpha
+xdotool key A
+shot 4-checkerboard
+xdotool key j
+shot 5-animated
+xdotool key j
+shot 6-long-name
 xdotool key g m m Return
 sleep 2
 shot 7-grid

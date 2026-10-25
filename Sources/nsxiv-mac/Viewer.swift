@@ -574,6 +574,9 @@ final class Viewer {
 
     // MARK: - key bindings
 
+    // a key the frontend has no name for still ends a C-x prefix, without running the handler
+    func unnamedKey() { prefixExternal = false }
+
     // true when a binding took the key
     func handle(_ k: Keystroke) -> Bool {
         if prefixExternal {

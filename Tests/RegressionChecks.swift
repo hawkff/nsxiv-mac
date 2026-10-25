@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 #else
+import CX11
 import Foundation
 #endif
 
@@ -86,7 +87,7 @@ struct RegressionChecks {
         try checkWindows(imageURL: imageURL)
         checkVision(image)
         #else
-        checkX11Helpers()
+        try checkX11Helpers(directory: directory)
         #endif
         print("Regression checks passed")
     }
@@ -191,7 +192,7 @@ struct RegressionChecks {
         assert(remaining == 0, "Vision callbacks did not finish")
     }
     #else
-    static func checkX11Helpers() {
+    static func checkX11Helpers(directory: URL) throws {
         assert(keyName(forKeysym: 0x47) == "G" && keyName(forKeysym: 0x20) == " ", "printable keys arrive as typed")
         assert(keyName(forKeysym: 0xff0d) == "Return" && keyName(forKeysym: 0xff51) == "Left",
                "other keys go by keysym name")
@@ -199,6 +200,41 @@ struct RegressionChecks {
         let cut = ImlibRenderer.truncatedHead("abcdefgh", width: 5) { $0.count }
         assert(cut == "…efgh" && ImlibRenderer.truncatedHead("abc", width: 5) { $0.count } == "abc",
                "long names lose their start: \(cut)")
+
+        // a two-frame GIF on a 20x10 canvas whose first frame is a red 4x4 patch at 12,3; a clear
+        // code before each pixel keeps every LZW code 3 bits wide
+        func le(_ v: Int) -> [UInt8] { [UInt8(v & 0xff), UInt8(v >> 8)] }
+        func frame(_ x: Int, _ y: Int, _ w: Int, _ h: Int, color: Int) -> [UInt8] {
+            var codes: [Int] = []
+            for _ in 0..<(w * h) { codes += [4, color] }
+            var data: [UInt8] = [], bits = 0, count = 0
+            for code in codes + [5] {
+                bits |= code << count
+                count += 3
+                while count >= 8 {
+                    data.append(UInt8(bits & 0xff))
+                    bits >>= 8
+                    count -= 8
+                }
+            }
+            if count > 0 { data.append(UInt8(bits)) }
+            var bytes: [UInt8] = [0x21, 0xf9, 4, 0, 10, 0, 0, 0, 0x2c] // 0.1 s, then where the frame lies
+            bytes += le(x) + le(y) + le(w) + le(h)
+            bytes += [0, 2, UInt8(data.count)] + data + [0]
+            return bytes
+        }
+        var gif = Array("GIF89a".utf8) + le(20) + le(10)
+        gif += [0x80, 0, 0, 0, 0, 0, 255, 0, 0] // two colors, black and red
+        gif += frame(12, 3, 4, 4, color: 1) + frame(0, 0, 1, 1, color: 0) + [0x3b]
+        let patch = directory.appendingPathComponent("patch.gif")
+        try Data(gif).write(to: patch)
+        guard let thumb = ImlibRenderer.makeThumbnail(patch.path) else { fatalError("no thumbnail for patch.gif") }
+        imlib_context_set_image(thumb)
+        let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
+        let pixels = imlib_image_get_data_for_reading_only()!
+        assert(width == 20 && height == 10 && pixels[4 * width + 13] == 0xffff0000 && pixels[width + 1] >> 24 == 0,
+               "an animation's thumbnail keeps its first frame where it lies on the canvas")
+        imlib_free_image()
     }
     #endif
 }
