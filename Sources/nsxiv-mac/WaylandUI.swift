@@ -310,6 +310,7 @@ final class WaylandUI: ViewerUI {
             height = min(height, Viewer.grownLimit(size.height, room: room.minY, room.maxY, keepsTopLeft: keepsTopLeft))
         }
         guard width != size.width || height != size.height else { return }
+        warn("resize to \(width)x\(height) from \(size), requested \(requested)") // TEMP
         let old = CGSize(width: size.width, height: size.height)
         size = (width, height)
         if requested.width == 0, requested.height == 0 {
