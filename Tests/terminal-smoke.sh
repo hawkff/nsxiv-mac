@@ -44,7 +44,8 @@ if [ "$mode" = sixel ]; then
     PATH=$pics/bin:$PATH
 fi
 export TERM=xterm-256color COLORTERM=truecolor bin pics mode winsize start
-fail() { echo "$1" >&2; tail -c 1500 "$out" | od -c | tail -30 >&2; exit 1; }
+fail() { echo "$1" >&2; tail -c 1500 "$out" | od -c | tail -30 >&2; tmux -L nsxiv-smoke kill-server 2>/dev/null; exit 1; }
+[ "$mode" != tmux ] || tmux -L nsxiv-smoke kill-server 2>/dev/null || true # one a failed run left
 # the session in script's terminal of 100 by 30 cells, or for kitty images the rows, columns and
 # pixels of winsize, which stty cannot set: it notes the terminal and the viewer's pid, and
 # compares the terminal's mode before and after the viewer
@@ -57,7 +58,8 @@ fi
 tty >"$pics/tty"
 before=$(stty -g)
 if [ "$mode" = tmux ]; then # -u for UTF-8, which the placeholders are, in a locale without it
-    tmux -u -L nsxiv-smoke -f "$pics/tmux.conf" new-session "sh $pics/run"
+    # the pane's variables named, as a tmux server still running would give it its own
+    tmux -u -L nsxiv-smoke -f "$pics/tmux.conf" new-session "env pics='$pics' bin='$bin' start='$start' sh $pics/run"
 else
     sh "$pics/run"
 fi
