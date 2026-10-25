@@ -221,6 +221,10 @@ struct RegressionChecks {
         assert(TerminalUI.keys(in: [0x1b]).rest == [0x1b], "a lone escape waits to tell Escape from a sequence")
         assert(TerminalUI.printable("a\u{1b}]52;c;eA==\u{7}b\u{9b}.png") == "a?]52;c;eA==?b?.png",
                "control characters in a name never reach the terminal")
+        // an answer to the probe that came late is no keys, as its G and = would be
+        let late = TerminalUI.keys(in: Array("j\u{1b}_Gi=31;OK\u{1b}\\k\u{1b}_Gi=3".utf8))
+        assert(late.keys == [Keystroke(key: "j"), Keystroke(key: "k")] && late.rest == Array("\u{1b}_Gi=3".utf8),
+               "kitty graphics replies never arrive as keys: \(late)")
         // herdr's answer, any terminal's answer, and an answer still on its way
         assert(TerminalUI.kittyGraphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62;22c".utf8)) == true
                && TerminalUI.kittyGraphics(in: Array("\u{1b}[?1;2c".utf8)) == false

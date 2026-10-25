@@ -46,6 +46,16 @@ final class TerminalUI: ViewerUI {
         }
         close(fd)
         let frame = template.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+        // a kill, or a closed terminal, ends the viewer as q does, once the main queue runs; ignored
+        // from here, a signal during the probe cannot end the viewer with the terminal still raw
+        var stops: [DispatchSourceProtocol] = []
+        for stop in [SIGINT, SIGTERM, SIGHUP] {
+            signal(stop, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: stop, queue: .main)
+            source.setEventHandler { viewer.quit() }
+            source.resume()
+            stops.append(source)
+        }
         Self.saved = (tty, mode, frame, false)
         atexit { TerminalUI.restoreTerminal() }
         Self.enter()
@@ -79,19 +89,12 @@ final class TerminalUI: ViewerUI {
         viewer.ui = self
         let input = DispatchSource.makeReadSource(fileDescriptor: tty, queue: .main)
         input.setEventHandler { [unowned self] in self.readKeys() }
-        sources.append(input)
         signal(SIGWINCH, SIG_IGN)
         let resized = DispatchSource.makeSignalSource(signal: SIGWINCH, queue: .main)
         resized.setEventHandler { [unowned self] in self.layoutChanged() }
-        sources.append(resized)
-        // a kill, or a closed terminal, ends the viewer as q does
-        for stop in [SIGINT, SIGTERM, SIGHUP] {
-            signal(stop, SIG_IGN)
-            let source = DispatchSource.makeSignalSource(signal: stop, queue: .main)
-            source.setEventHandler { viewer.quit() }
-            sources.append(source)
-        }
-        sources.forEach { $0.resume() }
+        input.resume()
+        resized.resume()
+        sources = stops + [input, resized]
     }
 
     func run() -> Never {
@@ -244,6 +247,12 @@ final class TerminalUI: ViewerUI {
             if b == 0x1b {
                 guard i + 1 < bytes.count else { return (keys, [b]) } // Escape, or a sequence's start
                 let next = bytes[i + 1]
+                if next == 0x5f { // ESC _ starts a kitty graphics reply, which no key sends: up to ESC \
+                    guard let end = (i + 2..<bytes.count).first(where: { bytes[$0] == 0x5c && bytes[$0 - 1] == 0x1b })
+                    else { return (keys, Array(bytes[i...])) }
+                    i = end + 1
+                    continue
+                }
                 guard next == 0x5b || next == 0x4f else { // not ESC [ or ESC O
                     if (0x20...0x7e).contains(next) { // Alt and a key: the key, as on X11
                         keys.append(Keystroke(key: String(UnicodeScalar(next))))
