@@ -65,9 +65,15 @@ status=$?
 [ "$(stty -g)" = "$before" ] || echo "the terminal mode changed"
 exit "$status"
 EOF
+# the viewer in its terminal, which in tmux is the pane: its status, and whether it left that
+# terminal's mode as it found it
 cat >"$pics/run" <<'EOF'
-echo $$ >"$pics/pid"
-exec "$bin" $start -o "$pics"
+before=$(stty -g)
+sh -c 'echo $$ >"$pics/pid"; exec "$bin" $start -o "$pics"'
+status=$?
+if [ "$(stty -g)" = "$before" ]; then left=same; else left=changed; fi
+echo "$status $left" >"$pics/status"
+exit "$status"
 EOF
 printf 'set -g allow-passthrough on\nset -g status off\nset -g escape-time 10\n' >"$pics/tmux.conf"
 timeout 60 script -q -e -c "sh $pics/session" /dev/null <"$keys" >"$out" &
@@ -282,6 +288,8 @@ kill -TERM "$(cat "$pics/pid")"
 wait "$session" || fail "SIGTERM did not end the viewer cleanly"
 if grep -a -q 'the terminal mode changed' "$out"; then fail "the viewer left the terminal in another mode"; fi
 if [ "$mode" = tmux ]; then
+    [ "$(cat "$pics/status" 2>/dev/null)" = "0 same" ] ||
+        fail "the viewer in tmux ended as '$(cat "$pics/status" 2>/dev/null)', not with status 0 and its pane's mode as it was"
     for image in "$red" "$blue"; do
         grep -a -q -F "$(printf '\033_Ga=d,d=I,i=%s,' "$image")" "$out" ||
             fail "the viewer left image $image in the terminal around tmux"
