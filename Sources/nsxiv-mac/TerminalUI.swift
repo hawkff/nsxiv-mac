@@ -44,6 +44,9 @@ final class TerminalUI: ViewerUI {
     private var direction = 1
     private var prefetch: DispatchWorkItem?
     private var symbols: [FrameKey: [UInt8]] = [:] // chafa's last frames
+    // stills shown or sent ahead: what loading them gave, and their files' times then
+    private var stills: [String: (info: ImageInfo, stamp: [Int])] = [:]
+    private var rendererPath: String? // the file the renderer holds; another loads once it must draw
     private var redrawDue: DispatchTime?
     private var sources: [DispatchSourceProtocol] = []
     private var cutOff: [UInt8] = [] // an escape sequence the last read ended inside
@@ -369,6 +372,7 @@ final class TerminalUI: ViewerUI {
             guard !kept.keys.contains(where: { $0.path == entry.path }), let next = renderer.peek(entry.url) else { continue }
             defer { renderer.release(next.image) }
             guard next.size.width * next.size.height <= 25_000_000 else { continue }
+            if let stamp = Self.stamp(entry.path) { stills[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
             var view = viewer.viewport
             view.setImageSize(next.size, resetView: true) // as loading it will
             let pixels = framePixels(view, image: true)
@@ -525,10 +529,47 @@ final class TerminalUI: ViewerUI {
 
     // MARK: - ViewerUI
 
-    func loadImage(_ url: URL) -> ImageInfo? { renderer.loadImage(url) }
+    // A still whose frame the terminal holds shows without Imlib2 or the disk, which on a network
+    // share costs a round trip a file: its file's times are compared off the main queue, and a
+    // file that changed loads again
+    func loadImage(_ url: URL) -> ImageInfo? {
+        if let still = stills[url.path], kept.keys.contains(where: { $0.path == url.path }) {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard Self.stamp(url.path) != still.stamp else { return }
+                DispatchQueue.main.async {
+                    guard let self, self.viewer.currentEntry?.path == url.path else { return }
+                    self.viewer.reloadCurrent()
+                }
+            }
+            return still.info
+        }
+        return loadNow(url)
+    }
+
+    private func loadNow(_ url: URL) -> ImageInfo? {
+        let info = renderer.loadImage(url)
+        rendererPath = url.path
+        if let info, !info.isAnimated, let stamp = Self.stamp(url.path) { stills[url.path] = (info, stamp) }
+        return info
+    }
+
+    // the renderer with the current image, before it draws it
+    private func loadRenderer() {
+        guard let entry = viewer.currentEntry, rendererPath != entry.path else { return }
+        _ = loadNow(entry.url)
+        renderer.imageChanged()
+    }
+
+    // what tells a file that changed from one that did not: its times, size and inode
+    private static func stamp(_ path: String) -> [Int]? {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
+        return [info.st_mtim.tv_sec, info.st_mtim.tv_nsec, info.st_ctim.tv_sec, info.st_ctim.tv_nsec,
+                Int(info.st_size), Int(truncatingIfNeeded: info.st_ino)]
+    }
 
     func imageChanged() {
-        renderer.imageChanged()
+        if rendererPath == viewer.currentEntry?.path { renderer.imageChanged() }
         if viewer.current != lastIndex {
             direction = viewer.current > lastIndex ? 1 : -1
             lastIndex = viewer.current
@@ -561,6 +602,13 @@ final class TerminalUI: ViewerUI {
         if !out.isEmpty { Self.writeAll(tty, Array(out.utf8)) }
     }
 
+    // a file that changed loads anew, for the frames and for what loading it gave
+    private func forgetFiles(_ paths: Set<String>) {
+        forgetFrames { paths.contains($0.path) }
+        for path in paths { stills[path] = nil }
+        if let rendererPath, paths.contains(rendererPath) { self.rendererPath = nil }
+    }
+
     func viewChanged() { setNeedsRedraw(image: true) }
     func gridChanged() { setNeedsRedraw(image: viewer.thumbnailMode) } // marks show in the grid only
     func barChanged() { setNeedsRedraw(image: false) }
@@ -589,8 +637,7 @@ final class TerminalUI: ViewerUI {
 
     func invalidateThumbnails(_ entries: [FileEntry]) {
         renderer.invalidateThumbnails(entries)
-        let paths = Set(entries.map(\.path))
-        forgetFrames { paths.contains($0.path) }
+        forgetFiles(Set(entries.map(\.path)))
         setNeedsRedraw(image: true)
     }
 
@@ -664,6 +711,7 @@ final class TerminalUI: ViewerUI {
 
     // the current view drawn into the canvas
     private func drawCanvas() -> Imlib_Image? {
+        if !viewer.thumbnailMode { loadRenderer() }
         let pixels = framePixels(viewer.viewport, image: !viewer.thumbnailMode && viewer.image != nil)
         guard let canvas = makeCanvas(pixels.width, pixels.height) else { return nil }
         renderer.render(into: canvas, width: pixels.width, height: pixels.height, scale: pixels.scale)
