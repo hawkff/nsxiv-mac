@@ -12,7 +12,9 @@
 # Then m marks the image, and SIGTERM must end the viewer as q does: the terminal comes back in
 # the mode it found, without images, before -o prints the marked file. In "kitty-budget", a
 # large terminal, the viewer starts on the second of three images, and must send only the third
-# ahead, as the first would push it out of what the terminal keeps. In "sixel", a terminal with
+# ahead, as the first would push it out of what the terminal keeps. In "herdr", a herdr pane,
+# which sends an image on to its client only once placed, the image sent ahead must get a hidden
+# placement of one cell in the status bar's last cell, and j must then only place it. In "sixel", a terminal with
 # sixels and no kitty graphics, the images must come from chafa as sixels of whole bands short
 # of the bar. In "tmux", the viewer runs in tmux with allow-passthrough, and this script is the
 # terminal around tmux: the viewer must ask it through tmux, and show each image as placeholders
@@ -44,6 +46,7 @@ if [ "$mode" = sixel ]; then
     PATH=$pics/bin:$PATH
 fi
 export TERM=xterm-256color COLORTERM=truecolor bin pics mode winsize start
+if [ "$mode" = herdr ]; then export TERM_PROGRAM=herdr; fi
 fail() { echo "$1" >&2; tail -c 1500 "$out" | od -c | tail -30 >&2; tmux -L nsxiv-smoke kill-server 2>/dev/null; exit 1; }
 [ "$mode" != tmux ] || tmux -L nsxiv-smoke kill-server 2>/dev/null || true # one a failed run left
 # the session in script's terminal of 100 by 30 cells, or for kitty images the rows, columns and
@@ -212,6 +215,18 @@ $(grep -a -o -E '.{0,24}"1;1;[0-9]+;[0-9]+.{0,8}' "$out" | head -2 | od -c | hea
     # chafa ran for the red image, the blue one ahead, and the lime one: j showed blue's frame twice
     [ "$(wc -l <"$pics/chafa-runs") $(grep -c -e '-ahead$' "$pics/chafa-runs")" = "3 1" ] ||
         fail "chafa made $(wc -l <"$pics/chafa-runs") frames, not 3, one ahead: $(cat "$pics/chafa-runs")"
+elif [ "$mode" = herdr ]; then
+    drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask whether the terminal shows kitty graphics"
+    printf '\033_Gi=31;OK\033\\\033_Gi=32;OK\033\\\033[?62;22c' >&3
+    drawn -F "$(printf '\033_Ga=T,')" "the viewer sent no kitty image"
+    # the next image goes ahead with a placement of one cell, at the bar's last cell, under its background
+    ahead=$(printf '\033[30;100H\033_Ga=T,i=')
+    drawn -F "$ahead" "the viewer did not place the image it sent ahead in the bar's last cell"
+    blue=$(grep -a -o -E "$(printf '\033')\[30;100H$(printf '\033')_Ga=T,i=[0-9]+" "$out" | tail -1 | sed 's/.*i=//')
+    drawn -F "$(printf '\033_Ga=T,i=%s,p=2,c=1,r=1,z=-1073741825,C=1,' "$blue")" "the image sent ahead did not go as one hidden cell"
+    printf j >&3
+    drawn -F "$(printf '\033_Ga=p,i=%s,p=1,' "$blue")" "j did not only place the image sent ahead"
+    bar 2-blue.png "j did not name the second image"
 elif [ "$mode" = tmux ]; then
     # tmux asks the terminal's attributes as it starts, then passes on what the viewer asks
     drawn -F "$(printf '\033[c')" "tmux did not ask the terminal's attributes"
@@ -316,7 +331,7 @@ fi
 leave=$(printf '\033[?1049l')
 at=$(grep -a -b -o -F "$leave" "$out" | tail -1 | cut -d: -f1)
 [ -n "$at" ] || fail "the viewer did not leave the alternate screen"
-case $mode in kitty*)
+case $mode in kitty* | herdr)
     grep -a -q -F "$(printf '\033_Ga=d,d=A,q=2\033\\\033[0m\033[?7h\033[?25h\033[?1049l')" "$out" ||
         fail "the viewer left its image on the screen"
 esac
