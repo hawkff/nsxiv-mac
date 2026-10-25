@@ -404,6 +404,8 @@ final class TerminalUI: ViewerUI {
 
     // the view drawn into the frame file: at the terminal's own pixels for a kitty image, at
     // 16 pixels a row for chafa, which needs no more for its symbols; false when it failed
+    // shortcut: a kitty frame of 2560x1640 pixels takes about 0.45 s to encode and 3 MB to send;
+    // cap its pixels, trading sharpness for speed, if larger terminals feel slow
     private func saveFrame() -> Bool {
         let scale = kitty ? cell.height / 16 : 1
         let width = max(1, Int((canvasSize.width * scale).rounded()))
