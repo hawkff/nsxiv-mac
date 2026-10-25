@@ -28,6 +28,9 @@ misc {
     disable_hyprland_logo = true
     disable_splash_rendering = true
 }
+debug {
+    disable_logs = false
+}
 EOF
 Hyprland --i-am-really-stupid --config "$conf" >"$log" 2>&1 &
 hypr=$!
@@ -52,7 +55,8 @@ sleep 6 # the large image shows from 4 to 8 seconds
 kill -0 "$pid"
 
 # Hyprland logs where it puts each popup; the probe asks for a 1048576-pixel square
-trimmed=$(grep 'gets unconstrained to' "$log" | tail -1)
+trimmed=$(cat "$log" "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE"/*.log 2>/dev/null |
+    grep 'gets unconstrained to' | tail -1)
 echo "probe: ${trimmed:-none}"
 [ -n "$trimmed" ] || fail "Hyprland got no room probe"
 case $trimmed in *1048576*) fail "Hyprland left the room probe untrimmed" ;; esac
