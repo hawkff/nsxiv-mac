@@ -54,6 +54,8 @@ final class TerminalUI: ViewerUI {
     private var chafaFrames: [FrameKey: [UInt8]] = [:] // chafa's last frames, as symbols or sixels
     private var chafaOrder: [FrameKey] = [] // least recently shown first
     private var chafaAhead = false // chafa making a frame ahead, in the background
+    private var framesForgotten = 0 // a frame made ahead from before that is stale
+    private var placeholderCache: (layout: [Int], cells: String) = ([], "")
     private var sixelLayout: [Int] = [] // the columns, rows and bar of the last sixel frame
     // the files loaded or sent ahead: what loading them gave, and their times just before
     private var loaded: [String: (info: ImageInfo, stamp: [Int])] = [:]
@@ -135,13 +137,16 @@ final class TerminalUI: ViewerUI {
             let parts = String(decoding: about, as: UTF8.self).split(whereSeparator: \.isWhitespace).dropFirst(2)
                 .first?.split(separator: ".").compactMap { Int($0) } ?? []
             let version = parts.count > 1 ? (parts[0], parts[1]) : (0, 0)
+            // sixels go at the terminal's pixels, which it may not give
+            var size = winsize()
+            let pixels = ioctl(tty, UInt(TIOCGWINSZ), &size) == 0 && size.ws_xpixel > 0 && size.ws_ypixel > 0
             // Sixels need chafa 1.14, which can be kept from wrapping them for tmux, as tmux draws
             // them itself. chafa keeps the canvas's pixels, the view being large enough at the scale
             // it gives sixels, 1, and only pads them below. Undithered, they take a third of the
             // bytes, closer to the image. chafa's default symbols add box-drawing lines, which
             // streak a photo. chafa 1.16 and later may probe the terminal, whose answers would
             // then arrive as keys.
-            sixel = probe.sixel && version >= (1, 14)
+            sixel = probe.sixel && pixels && version >= (1, 14)
             chafa = (sixel ? ["chafa", "--format=sixels", "--dither=none", "--passthrough=none"]
                 : ["chafa", "--format=symbols", "--symbols=block+space-wide-inverted", "--stretch"])
                 + ["--polite=on", "--relative=off", "--animate=off"] + (version >= (1, 16) ? ["--probe=off"] : [])
@@ -154,8 +159,11 @@ final class TerminalUI: ViewerUI {
         self.chafa = chafa
         self.frame = frame
         probeInput = probe.input
-        // unlike another viewer's in the same terminal; in tmux, the high byte of the ids
-        lastImageID = Self.tmux ? UInt32(getpid() % 255 + 1) << 24 : UInt32(getpid() & 0xffff) << 8
+        // unlike another viewer's in the same terminal; in tmux, the high byte of the ids, from the
+        // pane, so viewers in two panes differ
+        // shortcut: panes 255 apart share it; a registry in a tmux option would part them
+        let pane = environment["TMUX_PANE"].flatMap { Int($0.dropFirst()) } ?? Int(getpid())
+        lastImageID = Self.tmux ? UInt32(pane % 255 + 1) << 24 : UInt32(getpid() & 0xffff) << 8
         renderer = ImlibRenderer(viewer: viewer)
         renderer.drawsBar = false // the terminal's last line shows it
 
@@ -255,12 +263,13 @@ final class TerminalUI: ViewerUI {
 
     // What tmux passes on: kitty graphics with allow-passthrough, to a client with UTF-8, which
     // the placeholders are, and sixels where tmux draws them, from tmux 3.6, and its client shows
-    // them; tmux claims sixels whatever is around it.
-    static let tmuxFormat = "#{allow-passthrough}|#{client_utf8}|#{sixel_support}|#{client_termfeatures}"
+    // them; tmux claims sixels whatever is around it. A client that is another tmux, or screen,
+    // gets neither.
+    static let tmuxFormat = "#{allow-passthrough}|#{client_utf8}|#{sixel_support}|#{client_termfeatures}|#{client_termname}"
 
     static func tmuxSupport(_ answer: String) -> (passthrough: Bool, sixel: Bool) {
         let fields = answer.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "|", omittingEmptySubsequences: false)
-        guard fields.count == 4 else { return (false, false) }
+        guard fields.count == 5, !["screen", "tmux"].contains(where: { fields[4].hasPrefix($0) }) else { return (false, false) }
         return (["on", "all"].contains(fields[0]) && fields[1] == "1",
                 fields[2] == "1" && fields[3].split(separator: ",").contains("sixel"))
     }
@@ -392,9 +401,11 @@ final class TerminalUI: ViewerUI {
         return lastImageID
     }
 
-    // The terminal holds the frames the viewer kept, within what herdr keeps a pane, 64 MiB. A
-    // kept frame shows again by placement alone; the one it replaces loses its placement only.
+    // The terminal holds the frames the viewer kept, within what herdr keeps a pane, 64 MiB, and
+    // fewer than the ids tmux's placeholders tell apart. A kept frame shows again by placement
+    // alone; the one it replaces loses its placement only.
     private static let keptBudget = 56 << 20
+    private static let keptLimit = 128
 
     // a frame the terminal holds, now the most recently shown
     private func keep(_ key: FrameKey, id: UInt32, bytes: Int) {
@@ -408,7 +419,8 @@ final class TerminalUI: ViewerUI {
     private func trimKept(sparing spared: FrameKey? = nil) -> [UInt8] {
         var out = ""
         var total = kept.values.reduce(0) { $0 + $1.bytes }
-        while total > Self.keptBudget, let oldest = keptOrder.first(where: { $0 != spared && $0 != shownKey }),
+        while total > Self.keptBudget || kept.count > Self.keptLimit,
+              let oldest = keptOrder.first(where: { $0 != spared && $0 != shownKey }),
               let frame = kept.removeValue(forKey: oldest) {
             keptOrder.removeAll { $0 == oldest }
             total -= frame.bytes
@@ -435,7 +447,7 @@ final class TerminalUI: ViewerUI {
             show += sent.command
             if let key { keep(key, id: id, bytes: sent.bytes) }
         }
-        if Self.tmux { show += Array(Self.placeholders(id: id, columns: cols, rows: placedRows).utf8) }
+        if Self.tmux { show += Array(placeholders(id).utf8) }
         let hide = shownImage != id ? Array(hideShown().utf8) : []
         shownImage = id
         shownKey = key
@@ -443,17 +455,28 @@ final class TerminalUI: ViewerUI {
     }
 
     // The image as text in tmux, which redraws it with the pane, and which the terminal around it
-    // shows as image id: U+10EEEE in each cell, the row and column in diacritics on the first cell
-    // of each row, from which the cells after it count on. The id's low byte is the foreground of
-    // the 256 colors, and its high byte a third diacritic.
-    static func placeholders(id: UInt32, columns: Int, rows: Int) -> String {
-        let high = diacritics[Int(id >> 24)]
-        var text = "\u{1b}[38;5;\(id & 0xff)m"
-        for row in 0..<min(rows, diacritics.count) where columns > 0 {
-            text += "\u{1b}[\(row + 1);1H\u{10EEEE}\(diacritics[row])\(diacritics[0])\(high)"
-            text += String(repeating: "\u{10EEEE}", count: columns - 1)
+    // shows as image id: its low byte is the foreground of the 256 colors. The cells are the same
+    // for every image of the viewer's, so they are made once a layout.
+    private func placeholders(_ id: UInt32) -> String {
+        let layout = [cols, placedRows, Int(id >> 24)]
+        if placeholderCache.layout != layout {
+            placeholderCache = (layout, Self.placeholderCells(columns: cols, rows: placedRows, high: Int(id >> 24)))
         }
-        return text + "\u{1b}[39m"
+        return "\u{1b}[38;5;\(id & 0xff)m\(placeholderCache.cells)\u{1b}[39m"
+    }
+
+    // U+10EEEE in each cell, its row, column and the id's high byte in diacritics, so the cells
+    // right of a tmux menu still name the image; past the last column a diacritic names, the cells
+    // count on from the one before.
+    static func placeholderCells(columns: Int, rows: Int, high: Int) -> String {
+        let named = min(columns, diacritics.count)
+        var text = ""
+        for row in 0..<min(rows, diacritics.count) {
+            text += "\u{1b}[\(row + 1);1H"
+            for column in 0..<named { text += "\u{10EEEE}" + diacritics[row] + diacritics[column] + diacritics[high] }
+            text += String(repeating: "\u{10EEEE}", count: columns - named)
+        }
+        return text
     }
 
     // the kitty graphics protocol's diacritics for numbers in placeholders, the nth for n
@@ -519,7 +542,7 @@ final class TerminalUI: ViewerUI {
     // for it, and images over 25 megapixels are left out; a second process would decode alongside
     private func schedulePrefetch() {
         prefetch?.cancel()
-        guard kitty || sixel, !viewer.thumbnailMode else { return }
+        guard kitty || sixel, hasImageArea, !viewer.thumbnailMode else { return }
         let work = DispatchWorkItem { [unowned self] in self.prefetchNeighbor() }
         prefetch = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
@@ -565,12 +588,16 @@ final class TerminalUI: ViewerUI {
                 if let stamp { loaded[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
                 chafaAhead = true
                 let arguments = chafa + [chafaSize, frame + "-ahead"]
+                let forgotten = framesForgotten
                 DispatchQueue.global(qos: .utility).async {
                     let drawn = Self.chafaOutput(arguments, sixelHeight: pixels.height)
                     DispatchQueue.main.async { [weak self] in
                         guard let self else { return }
                         self.chafaAhead = false
-                        if let drawn { self.keepChafa(key, drawn) }
+                        // a file that changed, or another layout, meanwhile makes the frame stale;
+                        // after a failure, the next frame tries again
+                        guard let drawn, forgotten == self.framesForgotten else { return }
+                        self.keepChafa(key, drawn)
                         self.schedulePrefetch()
                     }
                 }
@@ -802,6 +829,7 @@ final class TerminalUI: ViewerUI {
 
     // kept frames that no longer match, as of a file that changed or of another terminal size
     private func forgetFrames(where stale: (FrameKey) -> Bool) {
+        framesForgotten += 1
         var out = ""
         for (key, frame) in kept where stale(key) {
             kept[key] = nil
@@ -875,6 +903,9 @@ final class TerminalUI: ViewerUI {
 
     private var imageRows: Int { max(0, rows - (viewer.barVisible ? 1 : 0)) }
 
+    // room for a frame: rows above the bar, and for sixels whole bands short of the last row
+    private var hasImageArea: Bool { cols > 0 && imageRows > 0 && (!sixel || sixelPixels.height > 0) }
+
     // A frame costs a chafa run or a whole image, so one in which only the status bar changed, as
     // after a mark, rewrites just the bar.
     // shortcut: thumbnails that come in one at a time redraw the grid at most every 0.3 s
@@ -902,7 +933,7 @@ final class TerminalUI: ViewerUI {
         if imageDirty {
             imageDirty = false
             // a frame that could not be drawn clears the screen, so no other image stays under this name
-            if cols > 0, imageRows > 0, !sixel || sixelPixels.height > 0 {
+            if hasImageArea {
                 if kitty, let frame = kittyFrame(currentKey()) {
                     out += frame.show
                     if Self.tmux { after = frame.hide } else { out += frame.hide }

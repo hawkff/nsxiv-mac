@@ -35,6 +35,14 @@ else
 fi
 mkfifo "$keys"
 unset DISPLAY WAYLAND_DISPLAY
+if [ "$mode" = sixel ]; then
+    # chafa as the viewer finds it, noting each frame it made once it made it, as the file it read
+    mkdir "$pics/bin"
+    printf '#!/bin/sh\n"%s" "$@"\nstatus=$?\nfor file; do :; done\ncase $file in /*) echo "$file" >>"%s";; esac\nexit $status\n' \
+        "$(command -v chafa)" "$pics/chafa-runs" >"$pics/bin/chafa"
+    chmod +x "$pics/bin/chafa"
+    PATH=$pics/bin:$PATH
+fi
 export TERM=xterm-256color COLORTERM=truecolor bin pics mode winsize start
 fail() { echo "$1" >&2; tail -c 1500 "$out" | od -c | tail -30 >&2; exit 1; }
 # the session in script's terminal of 100 by 30 cells, or for kitty images the rows, columns and
@@ -170,6 +178,10 @@ $(grep -a -o -E '.{0,24}"1;1;[0-9]+;[0-9]+.{0,8}' "$out" | head -2 | od -c | hea
     drawn -F 1-red.png "the status bar never named the first image"
     # chafa's colors, in percent, may be a step off
     drawn -E '#[0-9]+;2;(9[5-9]|100);[0-4];[0-4]([^0-9]|$)' "the first sixel image has no red"
+    # the next image, from chafa while the viewer waits, which j then only shows
+    for _ in $(seq 100); do grep -q -e '-ahead$' "$pics/chafa-runs" 2>/dev/null && break; sleep 0.1; done
+    grep -q -e '-ahead$' "$pics/chafa-runs" || fail "chafa made no frame of the next image ahead"
+    sleep 0.3
     printf j >&3
     drawn -F 2-blue.png "j did not name the second image"
     drawn -E '#[0-9]+;2;[0-4];[0-4];(9[5-9]|100)([^0-9]|$)' "j drew no blue sixel image"
@@ -179,22 +191,35 @@ $(grep -a -o -E '.{0,24}"1;1;[0-9]+;[0-9]+.{0,8}' "$out" | head -2 | od -c | hea
     printf j >&3
     for _ in $(seq 100); do [ "$(sixels)" -ge 4 ] && break; sleep 0.1; done
     [ "$(sixels)" -eq 4 ] || fail "the viewer drew $(sixels) sixel images, not 4"
+    # chafa ran for the red image, the blue one ahead, and the lime one: j showed blue's frame twice
+    [ "$(wc -l <"$pics/chafa-runs") $(grep -c -e '-ahead$' "$pics/chafa-runs")" = "3 1" ] ||
+        fail "chafa made $(wc -l <"$pics/chafa-runs") frames, not 3, one ahead: $(cat "$pics/chafa-runs")"
 elif [ "$mode" = tmux ]; then
     # tmux asks the terminal's attributes as it starts, then passes on what the viewer asks
     drawn -F "$(printf '\033[c')" "tmux did not ask the terminal's attributes"
     printf '\033[?62;22c' >&3
     drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask through tmux whether the terminal shows kitty graphics"
-    printf '\033_Gi=31;OK\033\\\033_Gi=32;OK\033\\\033[?62;22c' >&3
+    # a terminal that cannot read the viewer's files, so the images go as PNG, in chunks tmux passes on
+    printf '\033_Gi=31;OK\033\\\033_Gi=32;EBADF:Failed to read image file\033\\\033[?62;22c' >&3
     drawn -F "$(printf '\033_Ga=T,U=1,')" "the viewer sent no image for placeholders through tmux"
     bar 1-red.png "the status bar never named the first image"
     red=$(last a=T)
     drawn -E "$(placed "$red")" "tmux drew no placeholders for the red image"
     drawn -F "$(printf '\033_Ga=t,')" "the viewer did not send the next image ahead"
     blue=$(last a=t)
+    picture "$red"
+    picture "$blue"
+    [ "$(size "$red") $(hue "$(pixel "$red" 500,290)") $(size "$blue") $(hue "$(pixel "$blue" 400,232)")" = "1000x580 red 800x464 blue" ] ||
+        fail "the images went through tmux as $(size "$red") and $(size "$blue"), not as the red and blue frames"
     printf j >&3
     drawn -F "$(printf '\033_Ga=p,U=1,i=%s,' "$blue")" "j did not place the blue image sent ahead"
     drawn -E "$(placed "$blue")" "tmux drew no placeholders for the blue image"
     bar 2-blue.png "j did not name the second image"
+    # the red image's placement goes once tmux drew the blue placeholders over it, not while it shows
+    drawn -F "$(printf '\033_Ga=d,d=i,i=%s,p=1,' "$red")" "j did not take the red image's placement away"
+    hidden=$(grep -a -b -o -F "$(printf '\033_Ga=d,d=i,i=%s,p=1,' "$red")" "$out" | head -1 | cut -d: -f1)
+    shown=$(grep -a -b -o -E "$(placed "$blue")" "$out" | head -1 | cut -d: -f1)
+    [ "$shown" -lt "$hidden" ] || fail "the red image's placement went at byte $hidden, before tmux drew the blue one at $shown"
 else
     drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask whether the terminal shows kitty graphics"
     if [ "$mode" = kitty ]; then files='EBADF:Failed to read image file' medium=png; else files=OK medium=file; fi
@@ -257,8 +282,10 @@ kill -TERM "$(cat "$pics/pid")"
 wait "$session" || fail "SIGTERM did not end the viewer cleanly"
 if grep -a -q 'the terminal mode changed' "$out"; then fail "the viewer left the terminal in another mode"; fi
 if [ "$mode" = tmux ]; then
-    grep -a -q -F "$(printf '\033_Ga=d,d=I,i=%s,' "$blue")" "$out" ||
-        fail "the viewer left its images in the terminal around tmux"
+    for image in "$red" "$blue"; do
+        grep -a -q -F "$(printf '\033_Ga=d,d=I,i=%s,' "$image")" "$out" ||
+            fail "the viewer left image $image in the terminal around tmux"
+    done
     echo "$mode: drew $(wc -c <"$out") bytes through tmux"
     exit
 fi
