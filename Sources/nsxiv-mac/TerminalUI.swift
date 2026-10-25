@@ -67,6 +67,7 @@ final class TerminalUI: ViewerUI {
     // the files loaded or sent ahead: what loading them gave, and their times just before
     private var loaded: [String: (info: ImageInfo, stamp: [Int])] = [:]
     private var rendererPath: String? // the file the renderer holds; another loads once it must draw
+    private var rendererBehind = true // frame, turn or colors changed since the renderer took them
     private var redrawDue: DispatchTime?
     private var sources: [DispatchSourceProtocol] = []
     private var cutOff: [UInt8] = [] // an escape sequence the last read ended inside
@@ -979,10 +980,14 @@ final class TerminalUI: ViewerUI {
         return info
     }
 
-    // the renderer with the current image, before it draws it
+    // the renderer with the current image, its frame, turn and colors, before it draws it
     private func loadRenderer() {
-        guard let entry = viewer.currentEntry, rendererPath != entry.path else { return }
-        _ = loadNow(entry.url)
+        if let entry = viewer.currentEntry, rendererPath != entry.path {
+            _ = loadNow(entry.url)
+            rendererBehind = true
+        }
+        guard rendererBehind else { return }
+        rendererBehind = false
         renderer.imageChanged()
     }
 
@@ -994,8 +999,9 @@ final class TerminalUI: ViewerUI {
                 Int(info.st_size), Int(truncatingIfNeeded: info.st_ino)]
     }
 
+    // the renderer catches up once it draws, which a kept frame never needs
     func imageChanged() {
-        if rendererPath == viewer.currentEntry?.path { renderer.imageChanged() }
+        rendererBehind = true
         if viewer.current != lastIndex {
             direction = viewer.current > lastIndex ? 1 : -1
             lastIndex = viewer.current
