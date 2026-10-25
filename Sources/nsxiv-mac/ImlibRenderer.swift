@@ -418,8 +418,9 @@ final class ImlibRenderer {
         imlib_context_set_anti_alias(view.antialias ? 1 : 0)
         imlib_context_set_color_modifier(colorModifier)
         imlib_context_set_blend(alpha ? 1 : 0)
-        imlib_blend_image_onto_image(shown, 0, Int32(sx0), Int32(sy0), Int32(sx1 - sx0), Int32(sy1 - sy0),
-                                     x, y, dw, dh)
+        // onto a clear canvas, the image's alpha goes with its colors
+        imlib_blend_image_onto_image(shown, clearBackground ? 1 : 0, Int32(sx0), Int32(sy0), Int32(sx1 - sx0),
+                                     Int32(sy1 - sy0), x, y, dw, dh)
         imlib_context_set_color_modifier(nil)
         return (!alpha || view.alphaLayer) && x <= 0 && y <= 0 && Int(x + dw) >= width && Int(y + dh) >= height
     }
@@ -456,7 +457,7 @@ final class ImlibRenderer {
                 imlib_context_set_image(canvas)
                 imlib_context_set_anti_alias(1)
                 imlib_context_set_blend(1)
-                imlib_blend_image_onto_image(thumb, 0, 0, 0, Int32(tw), Int32(th), Int32(inner.midX - dw / 2),
+                imlib_blend_image_onto_image(thumb, clearBackground ? 1 : 0, 0, 0, Int32(tw), Int32(th), Int32(inner.midX - dw / 2),
                                              Int32(inner.midY - dh / 2), Int32(dw), Int32(dh))
             } else {
                 let p = inner.insetBy(dx: inner.width * 0.25, dy: inner.height * 0.25)
