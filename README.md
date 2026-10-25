@@ -67,12 +67,14 @@ On KDE the viewer loads a small KWin script over D-Bus, through `dbus-send`, to
 keep its window on screen as it grows. The script watches only that viewer's
 window and unloads itself when the window closes.
 
-With no display, the viewer runs in the terminal instead.
-[chafa](https://hpjansson.org/chafa/) draws the image as colored text symbols,
-which pass through tmux and other multiplexers too. The status bar takes the
-last line. Install chafa for this (`apt install chafa`, `pacman -S chafa`). The
-keys stay the same, and `C-c` quits too. `C-m` arrives as `Return` and `C-[` as
-`Escape`, because terminals send the same bytes for them.
+With no display, the viewer runs in the terminal instead, with the status bar
+on the last line. A terminal with the kitty graphics protocol, such as kitty,
+Ghostty, or WezTerm, shows the image at full resolution, also over SSH and in a
+herdr pane. Other terminals, tmux among them, get colored text symbols from
+[chafa](https://hpjansson.org/chafa/); install it for those (`apt install
+chafa`, `pacman -S chafa`). The keys stay the same, and `C-c` quits too. `C-m`
+arrives as `Return` and `C-[` as `Escape`, because terminals send the same
+bytes for them.
 
 ## Usage
 
