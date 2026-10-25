@@ -130,7 +130,7 @@ final class Viewer {
     var gammaValue: Double { Self.colorValue(gamma, max: Config.gammaMax) }
     var contrastValue: Double { Self.colorValue(contrast, max: Config.contrastMax) }
 
-    private static func colorValue(_ step: Int, max: Double) -> Double {
+    static func colorValue(_ step: Int, max: Double) -> Double {
         let steps = Double(Config.ccSteps)
         return step <= 0 ? (steps + Double(step)) / steps : 1 + Double(step) * (max - 1) / steps
     }

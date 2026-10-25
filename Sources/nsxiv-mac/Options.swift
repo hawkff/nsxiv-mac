@@ -1,6 +1,6 @@
 import Foundation
 
-enum ScaleMode {
+enum ScaleMode: Codable {
     case down, fit, width, height, fill, manual
 }
 

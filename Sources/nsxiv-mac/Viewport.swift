@@ -6,7 +6,7 @@ enum Direction {
 
 // Zoom and pan of the image in a view of viewSize, origin at the bottom left.
 // Both windowing systems draw imageRect; X11 flips it to its top-left origin.
-struct Viewport {
+struct Viewport: Codable {
     private(set) var zoom: CGFloat = 1
     private(set) var scaleMode: ScaleMode = .down
     private(set) var pan = CGPoint.zero
