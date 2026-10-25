@@ -43,6 +43,7 @@ final class TerminalUI: ViewerUI {
     private var lastIndex = 0 // of the image shown, for the way the viewer is going
     private var direction = 1
     private var prefetch: DispatchWorkItem?
+    private var notAhead: Set<String> = [] // neighbors that cannot go ahead: animations, broken files, huge images
     private var symbols: [FrameKey: [UInt8]] = [:] // chafa's last frames
     // the files loaded or sent ahead: what loading them gave, and their times just before
     private var loaded: [String: (info: ImageInfo, stamp: [Int])] = [:]
@@ -403,10 +404,18 @@ final class TerminalUI: ViewerUI {
                 reserved += frame.value.bytes
                 continue
             }
+            // peek decodes, so a neighbor it turned down waits for its file to change
+            guard !notAhead.contains(entry.path) else { continue }
             let stamp = Self.stamp(entry.path)
-            guard let next = renderer.peek(entry.url) else { continue }
+            guard let next = renderer.peek(entry.url) else {
+                notAhead.insert(entry.path)
+                continue
+            }
             defer { renderer.release(next.image) }
-            guard next.size.width * next.size.height <= 25_000_000 else { continue }
+            guard next.size.width * next.size.height <= 25_000_000 else {
+                notAhead.insert(entry.path)
+                continue
+            }
             var view = viewer.viewport
             view.setImageSize(next.size, resetView: true) // as loading it will
             let pixels = framePixels(view, image: true)
@@ -417,7 +426,8 @@ final class TerminalUI: ViewerUI {
             renderer.drawStill(next.image, view: view, into: canvas, width: pixels.width, height: pixels.height,
                                scale: pixels.scale)
             let id = newImageID()
-            guard let sent = transmit(canvas, id: id, place: false) else { return }
+            // a frame that went as PNG, as when the disk is full, takes more room than counted
+            guard let sent = transmit(canvas, id: id, place: false), reserved + sent.bytes <= Self.keptBudget else { return }
             if let stamp { loaded[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
             keep(key, id: id, bytes: sent.bytes)
             Self.writeAll(tty, sent.command + trimKept(sparing: key))
@@ -655,6 +665,7 @@ final class TerminalUI: ViewerUI {
     private func forgetFiles(_ paths: Set<String>) {
         forgetFrames { paths.contains($0.path) }
         for path in paths { loaded[path] = nil }
+        notAhead.subtract(paths)
         if let rendererPath, paths.contains(rendererPath) { self.rendererPath = nil }
     }
 
