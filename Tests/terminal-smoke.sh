@@ -29,23 +29,24 @@ EOF
 timeout 60 script -q -e -c "sh $pics/session" /dev/null <"$keys" >"$out" &
 session=$!
 exec 3>"$keys"
-# waits for the viewer to write $1
+# waits for the viewer to write $2, a fixed string with -F or a pattern with -E as $1
 drawn() {
     for _ in $(seq 100); do
-        if grep -a -q -F "$1" "$out"; then return; fi
+        if grep -a -q "$1" -- "$2" "$out"; then return; fi
         sleep 0.1
     done
-    fail "$2"
+    fail "$3"
 }
-drawn 1-red.png "the status bar never named the first image"
-drawn '255;0;0m' "chafa drew no red symbols for the red image"
+drawn -F 1-red.png "the status bar never named the first image"
+# chafa's colors, as 38;2;R;G;B or 48;2;R;G;B, may be a step off the image's 255
+drawn -E ';2;2[45][0-9];[0-9]{1,2};[0-9]{1,2}m' "chafa drew no red symbols for the red image"
 printf j >&3
-drawn 2-blue.png "j did not name the second image"
-drawn '0;0;255m' "j did not draw the blue image"
+drawn -F 2-blue.png "j did not name the second image"
+drawn -E ';2;[0-9]{1,2};[0-9]{1,2};2[45][0-9]m' "j did not draw the blue image"
 stty -F "$(cat "$pics/tty")" cols 80 rows 20
-drawn "$(printf '\033[20;1H')" "a smaller terminal did not get the status bar on its last line"
+drawn -F "$(printf '\033[20;1H')" "a smaller terminal did not get the status bar on its last line"
 printf m >&3
-drawn '*1 |' "m did not mark the image"
+drawn -F '*1 |' "m did not mark the image"
 kill -TERM "$(cat "$pics/pid")"
 wait "$session" || fail "SIGTERM did not end the viewer cleanly"
 if grep -a -q 'the terminal mode changed' "$out"; then fail "the viewer left the terminal in another mode"; fi
