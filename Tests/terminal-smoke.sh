@@ -85,6 +85,14 @@ picture() {
 # pixel x,y of image $1 as r,g,b
 pixel() { magick "$pics/image-$1.png" -format "%[fx:round(255*p{$2}.r)],%[fx:round(255*p{$2}.g)],%[fx:round(255*p{$2}.b)]" info:; }
 size() { magick "$pics/image-$1.png" -format '%wx%h' info:; }
+# r,g,b as red, blue or white, within the few steps scaling may take off
+hue() {
+    echo "$1" | awk -F, '{ hi = 250; lo = 5
+        if ($1 >= hi && $2 <= lo && $3 <= lo) print "red"
+        else if ($1 <= lo && $2 <= lo && $3 >= hi) print "blue"
+        else if ($1 >= hi && $2 >= hi && $3 >= hi) print "white"
+        else print $0 }'
+}
 
 if [ "$mode" = symbols ]; then
     drawn -F 1-red.png "the status bar never named the first image"
@@ -103,12 +111,12 @@ else
     drawn -F 1-red.png "the status bar never named the first image"
     red=$(last a=T)
     picture "$red"
-    [ "$(size "$red") $(pixel "$red" 500,290) $(pixel "$red" 995,575)" = "1000x580 255,0,0 255,0,0" ] ||
+    [ "$(size "$red") $(hue "$(pixel "$red" 500,290)") $(hue "$(pixel "$red" 995,575)")" = "1000x580 red red" ] ||
         fail "the red image went as $(size "$red") $(pixel "$red" 500,290) $(pixel "$red" 995,575), not filling 1000x580 pixels with red"
     drawn -F "$(printf '\033_Ga=t,')" "the viewer did not send the next image ahead"
     blue=$(last a=t)
     picture "$blue"
-    [ "$(size "$blue") $(pixel "$blue" 400,232) $(pixel "$blue" 5,5)" = "800x464 0,0,255 255,255,255" ] ||
+    [ "$(size "$blue") $(hue "$(pixel "$blue" 400,232)") $(hue "$(pixel "$blue" 5,5)")" = "800x464 blue white" ] ||
         fail "the blue image went as $(size "$blue") $(pixel "$blue" 400,232) $(pixel "$blue" 5,5), not as 800x464 pixels with blue amid white"
     printf j >&3
     drawn -F "$(printf '\033_Ga=p,i=%s,' "$blue")" "j did not show the blue image sent ahead"
