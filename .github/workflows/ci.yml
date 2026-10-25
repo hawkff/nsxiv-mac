@@ -101,11 +101,13 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Install Swift, X11, Wayland, Imlib2 and niri
         run: |
           pacman -Syu --noconfirm --needed base-devel libx11 imlib2 fontconfig wayland libxkbcommon \
             libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim wtype imagemagick mesa kwin wayfire \
-            jq
+            jq river-classic cosmic-comp
           useradd -m tester # Wayfire refuses to run as root
           # the toolchain the AUR's swift-bin repackages, with ncurses under its Arch name; the
           # hash is of the tarball the Swift 6.x release key signed
@@ -117,7 +119,9 @@ jobs:
           ln -sf /usr/lib/libncursesw.so.6 /usr/lib/libncurses.so.6
           echo /opt/swift-6.4.1-RELEASE-ubi10/usr/bin >> "$GITHUB_PATH"
           # copies without the file capabilities a container cannot grant
-          for compositor in sway niri kwin_wayland; do install -m755 "/usr/bin/$compositor" "/usr/local/bin/$compositor"; done
+          for compositor in sway niri kwin_wayland river cosmic-comp; do
+            install -m755 "/usr/bin/$compositor" "/usr/local/bin/$compositor"
+          done
       - name: Build
         run: swift build -c release
       - name: Smoke test
@@ -132,6 +136,12 @@ jobs:
         run: |
           mkdir -p stacking-shots && chmod 777 stacking-shots
           runuser -u tester -- sh Tests/stacking-smoke.sh .build/release/nsxiv-mac wayfire stacking-shots
+      - name: Run under river, where a growing window must stay on screen
+        run: sh Tests/stacking-smoke.sh .build/release/nsxiv-mac river stacking-shots
+      - name: Run as a floating niri window, which must stay on screen as it grows
+        run: sh Tests/niri-floating-smoke.sh .build/release/nsxiv-mac
+      - name: Run under COSMIC, where a growing window must stay on screen
+        run: dbus-run-session -- sh Tests/cosmic-smoke.sh .build/release/nsxiv-mac cosmic-shots
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -139,6 +149,30 @@ jobs:
           path: |
             niri-shots
             stacking-shots
+            cosmic-shots
+
+  hyprland:
+    needs: linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: nsxiv-mac-linux
+      # Hyprland needs a display device; vkms is a virtual one, drawn by software
+      - name: Load a virtual display
+        run: |
+          sudo modprobe vkms || { sudo apt-get update && sudo apt-get install -y "linux-modules-extra-$(uname -r)" && sudo modprobe vkms; }
+          ls -l /dev/dri
+      - name: Run under Hyprland, which keeps the size it gave a window
+        run: |
+          tar -xzf nsxiv-mac-linux.tar.gz
+          docker run --rm --privileged -v "$PWD:/w" -w /w archlinux:latest bash -c '
+            pacman -Syu --noconfirm --needed hyprland mesa imlib2 fontconfig libx11 libxkbcommon wayland \
+              ttf-dejavu imagemagick jq >/dev/null
+            sh Tests/hyprland-smoke.sh ./nsxiv-mac'
 
   plasma5:
     runs-on: ubuntu-24.04
