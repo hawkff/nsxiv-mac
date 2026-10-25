@@ -250,10 +250,11 @@ struct RegressionChecks {
                && foot! == (false, false, true) && vt132! == (false, false, false)
                && TerminalUI.graphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62".utf8)) == nil,
                "the probe tells kitty graphics, frames in files and sixels from their absence, once the device attributes came")
-        assert(TerminalUI.tmuxSupport("on|1|bpaste,clipboard,sixel,sync\n") == (true, true)
-               && TerminalUI.tmuxSupport("all|1|RGB\n") == (true, false) && TerminalUI.tmuxSupport("off||sixel\n") == (false, false)
-               && TerminalUI.tmuxSupport("") == (false, false),
-               "tmux passes kitty graphics with allow-passthrough, and sixels where it and its client have them")
+        assert(TerminalUI.tmuxSupport("on|1|1|bpaste,clipboard,sixel,sync\n") == (true, true)
+               && TerminalUI.tmuxSupport("all|1|1|RGB\n") == (true, false)
+               && TerminalUI.tmuxSupport("on|0|1|sixel\n") == (false, true)
+               && TerminalUI.tmuxSupport("off|1||sixel\n") == (false, false) && TerminalUI.tmuxSupport("") == (false, false),
+               "tmux passes kitty graphics with allow-passthrough to a client with UTF-8, and sixels where it and its client have them")
         assert(TerminalUI.passthrough("\u{1b}_Ga=q\u{1b}\\") == "\u{1b}Ptmux;\u{1b}\u{1b}_Ga=q\u{1b}\u{1b}\\\u{1b}\\",
                "a command for the terminal around tmux goes in tmux's passthrough, its escapes doubled")
         // image 3 << 24 | 200 in two rows of three cells: rows 0 and 1, column 0 and high byte 3 on

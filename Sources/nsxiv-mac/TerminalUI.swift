@@ -253,14 +253,16 @@ final class TerminalUI: ViewerUI {
         "\u{1b}Ptmux;\(sequence.replacingOccurrences(of: "\u{1b}", with: "\u{1b}\u{1b}"))\u{1b}\\"
     }
 
-    // What tmux passes on: kitty graphics with allow-passthrough, and sixels where it draws them,
-    // from tmux 3.6, and its client shows them; tmux claims sixels whatever is around it.
-    static let tmuxFormat = "#{allow-passthrough}|#{sixel_support}|#{client_termfeatures}"
+    // What tmux passes on: kitty graphics with allow-passthrough, to a client with UTF-8, which
+    // the placeholders are, and sixels where tmux draws them, from tmux 3.6, and its client shows
+    // them; tmux claims sixels whatever is around it.
+    static let tmuxFormat = "#{allow-passthrough}|#{client_utf8}|#{sixel_support}|#{client_termfeatures}"
 
     static func tmuxSupport(_ answer: String) -> (passthrough: Bool, sixel: Bool) {
         let fields = answer.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "|", omittingEmptySubsequences: false)
-        guard fields.count == 3 else { return (false, false) }
-        return (["on", "all"].contains(fields[0]), fields[1] == "1" && fields[2].split(separator: ",").contains("sixel"))
+        guard fields.count == 4 else { return (false, false) }
+        return (["on", "all"].contains(fields[0]) && fields[1] == "1",
+                fields[2] == "1" && fields[3].split(separator: ",").contains("sixel"))
     }
 
     // A terminal with kitty graphics answers a query for a one-pixel image with OK, before the

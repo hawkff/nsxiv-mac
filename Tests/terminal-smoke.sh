@@ -48,8 +48,8 @@ else # rows, columns, then pixels; 0x5414 is TIOCSWINSZ
 fi
 tty >"$pics/tty"
 before=$(stty -g)
-if [ "$mode" = tmux ]; then
-    tmux -L nsxiv-smoke -f "$pics/tmux.conf" new-session "sh $pics/run"
+if [ "$mode" = tmux ]; then # -u for UTF-8, which the placeholders are, in a locale without it
+    tmux -u -L nsxiv-smoke -f "$pics/tmux.conf" new-session "sh $pics/run"
 else
     sh "$pics/run"
 fi
