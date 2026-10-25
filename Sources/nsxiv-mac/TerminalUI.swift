@@ -616,11 +616,13 @@ final class TerminalUI: ViewerUI {
         let due = DispatchTime.now() + delay
         if let redrawDue, redrawDue <= due { return }
         redrawDue = due
-        DispatchQueue.main.asyncAfter(deadline: due) { [self] in
+        let draw = { [self] in
             guard let redrawDue, redrawDue <= .now() else { return }
             self.redrawDue = nil
             render()
         }
+        // the next turn of the main queue, after the keys read with this one; a timer takes longer
+        if delay == 0 { DispatchQueue.main.async(execute: draw) } else { DispatchQueue.main.asyncAfter(deadline: due, execute: draw) }
     }
 
     // In synchronized output, the terminal shows the frame once it is whole, so the bar never
