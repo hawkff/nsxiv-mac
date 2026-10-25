@@ -225,6 +225,11 @@ struct RegressionChecks {
         let late = TerminalUI.keys(in: Array("j\u{1b}_Gi=31;OK\u{1b}\\k\u{1b}_Gi=3".utf8))
         assert(late.keys == [Keystroke(key: "j"), Keystroke(key: "k")] && late.rest == Array("\u{1b}_Gi=3".utf8),
                "kitty graphics replies never arrive as keys: \(late)")
+        // what the probe read: herdr's answers, a j typed meanwhile, and the start of a Left whose D
+        // comes in the next read, which must not count alone, as D would drop the image
+        let probed = TerminalUI.keys(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62;22cj\u{1b}[".utf8))
+        assert(probed.keys == [nil, Keystroke(key: "j")] && TerminalUI.keys(in: probed.rest + [0x44]).keys == [Keystroke(key: "Left")],
+               "keys typed during the probe count, and the answers end only a C-x prefix: \(probed)")
         // herdr's answer, any terminal's answer, and an answer still on its way
         assert(TerminalUI.kittyGraphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62;22c".utf8)) == true
                && TerminalUI.kittyGraphics(in: Array("\u{1b}[?1;2c".utf8)) == false

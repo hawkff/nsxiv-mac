@@ -46,7 +46,8 @@ drawn() {
     fail "$3"
 }
 # waits for kitty image $1, counting from 1, from its first chunk to the one with m=0; then
-# checks it is 1000x580, the cells under the status bar, and its middle is the color $2 as r,g,b
+# checks it is 1000x580, the cells under the status bar, and the picture fills it, in the color
+# $2 as r,g,b from the middle to the corner: at 16 units a cell, it takes 1.25 pixels a unit
 image() {
     for _ in $(seq 100); do
         awk -v want="$1" 'BEGIN { RS = "\033\\\\" }
@@ -57,8 +58,8 @@ image() {
                 if (keys ~ /(^|,)a=T(,|$)/) { n++; payload = "" }
                 if (n == want) { payload = payload substr(body, semi + 1); if (keys ~ /(^|,)m=0(,|$)/) { printf "%s", payload; exit } }
             }' "$out" | base64 -d >"$pics/image-$1.png" 2>/dev/null || true
-        if seen=$(magick "$pics/image-$1.png" -format '%w %h %[fx:round(255*p{500,290}.r)],%[fx:round(255*p{500,290}.g)],%[fx:round(255*p{500,290}.b)]' info: 2>/dev/null); then
-            [ "$seen" = "1000 580 $2" ] || fail "kitty image $1 is $seen, expected 1000 580 $2"
+        if seen=$(magick "$pics/image-$1.png" -format '%w %h %[fx:round(255*p{500,290}.r)],%[fx:round(255*p{500,290}.g)],%[fx:round(255*p{500,290}.b)] %[fx:round(255*p{995,575}.r)],%[fx:round(255*p{995,575}.g)],%[fx:round(255*p{995,575}.b)]' info: 2>/dev/null); then
+            [ "$seen" = "1000 580 $2 $2" ] || fail "kitty image $1 is $seen, expected 1000 580 $2 $2"
             return
         fi
         sleep 0.1

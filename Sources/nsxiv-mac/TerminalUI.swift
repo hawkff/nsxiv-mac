@@ -24,6 +24,7 @@ final class TerminalUI: ViewerUI {
     private var sources: [DispatchSourceProtocol] = []
     private var cutOff: [UInt8] = [] // an escape sequence the last read ended inside
     private var cutOffTimeout: DispatchWorkItem?
+    private let probeInput: [UInt8] // the probe's answers, which the key parser skips, and keys typed meanwhile
 
     // what atexit puts back
     private static var saved: (tty: Int32, mode: termios, frame: String, kitty: Bool)?
@@ -59,7 +60,8 @@ final class TerminalUI: ViewerUI {
         Self.saved = (tty, mode, frame, false)
         atexit { TerminalUI.restoreTerminal() }
         Self.enter()
-        let kitty = Self.showsKittyGraphics(tty)
+        let probe = Self.probeKittyGraphics(tty)
+        let kitty = probe.shows
         Self.saved?.kitty = kitty
         var chafa: [String] = []
         if !kitty {
@@ -82,6 +84,7 @@ final class TerminalUI: ViewerUI {
         self.kitty = kitty
         self.chafa = chafa
         self.frame = frame
+        probeInput = probe.input
         renderer = ImlibRenderer(viewer: viewer)
         renderer.drawsBar = false // the terminal's last line shows it
 
@@ -99,6 +102,7 @@ final class TerminalUI: ViewerUI {
 
     func run() -> Never {
         viewer.start()
+        take(probeInput[...])
         dispatchMain()
     }
 
@@ -148,8 +152,9 @@ final class TerminalUI: ViewerUI {
     private static let deleteImages = "\u{1b}_Ga=d,d=A,q=2\u{1b}\\"
 
     // A terminal with kitty graphics answers a query for a one-pixel image with OK, before the
-    // device attributes any terminal reports; one that never answers gets symbols after a second
-    private static func showsKittyGraphics(_ tty: Int32) -> Bool {
+    // device attributes any terminal reports; one that never answers gets symbols after a second.
+    // Everything read meanwhile comes back too, for the keys typed during the probe.
+    private static func probeKittyGraphics(_ tty: Int32) -> (shows: Bool, input: [UInt8]) {
         writeAll(tty, Array("\u{1b}_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\u{1b}\\\u{1b}[c".utf8))
         var reply: [UInt8] = []
         let deadline = Date().addingTimeInterval(1)
@@ -160,9 +165,9 @@ final class TerminalUI: ViewerUI {
             let n = read(tty, &bytes, bytes.count)
             guard n > 0 else { break }
             reply += bytes[..<n]
-            if let shows = kittyGraphics(in: reply) { return shows }
+            if let shows = kittyGraphics(in: reply) { return (shows, reply) }
         }
-        return false
+        return (false, reply)
     }
 
     // what a reply to that query says; nil until the device attributes end it
@@ -208,8 +213,13 @@ final class TerminalUI: ViewerUI {
         let n = read(tty, &bytes, bytes.count)
         if n < 0, errno == EINTR || errno == EAGAIN { return }
         guard n > 0 else { viewer.quit() } // the terminal went away
+        take(bytes[..<n])
+    }
+
+    // the keys in what the terminal sent; a sequence it ends inside waits for the next bytes
+    private func take(_ bytes: ArraySlice<UInt8>) {
         cutOffTimeout?.cancel()
-        let parsed = Self.keys(in: cutOff + bytes[..<n])
+        let parsed = Self.keys(in: cutOff + bytes)
         cutOff = parsed.rest
         handle(parsed.keys)
         guard !cutOff.isEmpty else { return }
@@ -349,8 +359,9 @@ final class TerminalUI: ViewerUI {
         if ioctl(tty, UInt(TIOCGWINSZ), &size) == 0, size.ws_col > 0, size.ws_row > 0 {
             cols = Int(size.ws_col)
             rows = Int(size.ws_row)
-            if size.ws_xpixel > 0, size.ws_ypixel > 0 {
-                cell = (Double(size.ws_xpixel) / Double(cols), Double(size.ws_ypixel) / Double(rows))
+            // whole pixels: a window may report a few pixels beyond its last cell
+            if size.ws_xpixel >= size.ws_col, size.ws_ypixel >= size.ws_row {
+                cell = (Double(Int(size.ws_xpixel) / cols), Double(Int(size.ws_ypixel) / rows))
             }
         }
         viewer.resizeCanvas(canvasSize)
@@ -405,6 +416,9 @@ final class TerminalUI: ViewerUI {
             }
             if drawn == nil { shownImage = 0 }
             out += drawn ?? Array("\(kitty ? Self.deleteImages : "")\u{1b}[2J".utf8)
+        } else if shownImage != 0 { // no row left for an image, as in a one-row terminal with the bar
+            out += Array(Self.deleteImages.utf8)
+            shownImage = 0
         }
         if viewer.barVisible, rows > 0 { out += Array("\u{1b}[\(rows);1H\u{1b}[0;7m\(statusLine())\u{1b}[0m".utf8) }
         out += Array("\u{1b}[H".utf8) // where a stray warning lands without scrolling the screen
