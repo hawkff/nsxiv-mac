@@ -26,11 +26,9 @@ final class X11UI: ViewerUI {
     private var dragged = false
     private var lastClick: (time: Time, index: Int)?
 
-    init(viewer: Viewer) {
-        guard let dpy = XOpenDisplay(nil) else {
-            warn("cannot open display \(ProcessInfo.processInfo.environment["DISPLAY"] ?? "(DISPLAY unset)")")
-            exit(1)
-        }
+    // nil without an X display to connect to
+    init?(viewer: Viewer) {
+        guard let dpy = XOpenDisplay(nil) else { return nil }
         let screen = XDefaultScreen(dpy)
         let visual: UnsafeMutablePointer<Visual> = XDefaultVisual(dpy, screen)
         let colormap = XDefaultColormap(dpy, screen)

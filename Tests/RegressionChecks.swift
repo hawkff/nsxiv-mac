@@ -87,7 +87,7 @@ struct RegressionChecks {
         try checkWindows(imageURL: imageURL)
         checkVision(image)
         #else
-        try checkX11Helpers(directory: directory)
+        try checkLinuxHelpers(directory: directory)
         #endif
         print("Regression checks passed")
     }
@@ -192,7 +192,7 @@ struct RegressionChecks {
         assert(remaining == 0, "Vision callbacks did not finish")
     }
     #else
-    static func checkX11Helpers(directory: URL) throws {
+    static func checkLinuxHelpers(directory: URL) throws {
         assert(keyName(forKeysym: 0x47) == "G" && keyName(forKeysym: 0x20) == " ", "printable keys arrive as typed")
         assert(keyName(forKeysym: 0xff0d) == "Return" && keyName(forKeysym: 0xff51) == "Left",
                "other keys go by keysym name")
@@ -200,6 +200,31 @@ struct RegressionChecks {
         let cut = ImlibRenderer.truncatedHead("abcdefgh", width: 5) { $0.count }
         assert(cut == "…efgh" && ImlibRenderer.truncatedHead("abc", width: 5) { $0.count } == "abc",
                "long names lose their start: \(cut)")
+
+        let typed = TerminalUI.keys(in: Array("j\u{1b}[A\u{1b}[1;5D\u{18}\r\u{7f}\u{1b}[3~\u{1b}OP\u{0}\u{e9}\u{1b}j".utf8))
+        let named: [Keystroke?] = [
+            Keystroke(key: "j"), Keystroke(key: "Up"), Keystroke(key: "Left", ctrl: true), Keystroke(key: "x", ctrl: true),
+            Keystroke(key: "Return"), Keystroke(key: "BackSpace"), Keystroke(key: "Delete"), Keystroke(key: "F1"),
+            Keystroke(key: " ", ctrl: true), nil, Keystroke(key: "j"), // Alt-j is j, as on X11
+        ]
+        assert(typed.keys == named && typed.rest.isEmpty, "terminal bytes arrive as the keys X11 names: \(typed)")
+        // a sequence another escape cuts short is one key without a name, so its end is no D;
+        // a modifier as low as Int.min cannot overflow
+        let odd = TerminalUI.keys(in: Array("\u{1b}[\u{1b}[D\u{1b}[1;-9223372036854775808A".utf8))
+        assert(odd.keys == [nil, Keystroke(key: "Left"), Keystroke(key: "Up")] && odd.rest.isEmpty,
+               "broken sequences end as one key without a name: \(odd)")
+        // Left cut in two between reads, where its last byte alone would be D, which drops the image
+        let firstRead = TerminalUI.keys(in: Array("k\u{1b}[".utf8))
+        let secondRead = TerminalUI.keys(in: firstRead.rest + Array("D".utf8))
+        assert(firstRead.keys == [Keystroke(key: "k")] && secondRead.keys == [Keystroke(key: "Left")]
+               && secondRead.rest.isEmpty, "a sequence a read cuts off joins the next read: \(firstRead) \(secondRead)")
+        assert(TerminalUI.keys(in: [0x1b]).rest == [0x1b], "a lone escape waits to tell Escape from a sequence")
+        assert(TerminalUI.printable("a\u{1b}]52;c;eA==\u{7}b\u{9b}.png") == "a?]52;c;eA==?b?.png",
+               "control characters in a name never reach the terminal")
+        let held = TerminalUI.collapsingRepeats([Keystroke?](repeating: Keystroke(key: "j"), count: 5)
+            + [Keystroke(key: "k"), Keystroke(key: "k")])
+        assert(held == [Keystroke(key: "j"), Keystroke(key: "k"), Keystroke(key: "k")],
+               "a held key's piled-up repeats count once, a double tap twice: \(held)")
 
         // a two-frame GIF on a 20x10 canvas whose first frame is a red 4x4 patch at 12,3; a clear
         // code before each pixel keeps every LZW code 3 bits wide

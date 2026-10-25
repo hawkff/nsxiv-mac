@@ -9,6 +9,8 @@ final class ImlibRenderer {
     private let viewer: Viewer
     // a thumbnail arrived, so the frontend should draw again
     var onThumbnail: () -> Void = {}
+    // false where the frontend shows the status bar itself, as the terminal does on its last line
+    var drawsBar = true
 
     // the open file: its composed frames, and the current one rotated and flipped
     private var frames: [Imlib_Image] = []
@@ -246,6 +248,7 @@ final class ImlibRenderer {
                 failedThumbs.insert(path)
             }
             onThumbnail()
+            scheduleThumbnail() // the next one, without waiting for a frame that may come later
         }
     }
 
@@ -301,7 +304,7 @@ final class ImlibRenderer {
         imlib_context_set_color_modifier(nil)
         imlib_context_set_operation(IMLIB_OP_COPY)
         fill(background, 0, 0, width, height)
-        let barH = viewer.barVisible ? Int((Double(barHeight) * scale).rounded()) : 0
+        let barH = drawsBar && viewer.barVisible ? Int((Double(barHeight) * scale).rounded()) : 0
         let mainH = max(0, height - barH)
         if viewer.thumbnailMode {
             renderGrid(canvas, scale: scale)

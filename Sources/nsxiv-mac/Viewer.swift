@@ -2,7 +2,7 @@ import Foundation
 
 // A key as the bindings see it: the typed text ("j", "G", "?"), or nsxiv's X keysym
 // name for a key without text ("Return", "Left", "BackSpace").
-struct Keystroke {
+struct Keystroke: Equatable {
     var key: String
     var ctrl = false
 }
@@ -36,6 +36,17 @@ protocol ViewerUI: AnyObject {
     func beep()
     // false where edit mode does not exist
     func enterEditMode() -> Bool
+    // the viewer is about to print to stdout and exit
+    func willQuit()
+    // around a key-handler, which a terminal frontend hands the terminal to
+    func keyHandlerWillRun()
+    func keyHandlerDidRun()
+}
+
+extension ViewerUI {
+    func willQuit() {}
+    func keyHandlerWillRun() {}
+    func keyHandlerDidRun() {}
 }
 
 // The image list, marks, modes and key bindings, shared by both windowing systems.
@@ -219,6 +230,7 @@ final class Viewer {
     }
 
     func quit() -> Never {
+        ui?.willQuit()
         printMarkedIfNeeded()
         exit(0)
     }
@@ -545,16 +557,19 @@ final class Viewer {
         // timers and X events queued on main
         let exited = DispatchSemaphore(value: 0)
         proc.terminationHandler = { _ in exited.signal() }
+        ui?.keyHandlerWillRun()
         do {
             try proc.run()
         } catch {
             warn("key-handler failed: \(error.localizedDescription)")
+            ui?.keyHandlerDidRun()
             return
         }
         // a handler may stop reading early; with SIGPIPE ignored the write fails instead
         try? pipe.fileHandleForWriting.write(contentsOf: Data(targets.map { files[$0].path + "\n" }.joined().utf8))
         try? pipe.fileHandleForWriting.close()
         exited.wait()
+        ui?.keyHandlerDidRun()
         // the handler may have edited, moved or deleted its files
         ui?.invalidateThumbnails(targets.map { files[$0] })
         let gone = targets.filter { !FileManager.default.fileExists(atPath: files[$0].path) }
@@ -616,6 +631,7 @@ final class Viewer {
         case "q": quit()
         case "Q":
             // pick-quit: print the current file and exit (nsxiv g_pick_quit)
+            ui?.willQuit()
             if let entry = currentEntry { print(entry.path) }
             markedPrinted = true
             exit(0)
