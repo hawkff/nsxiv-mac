@@ -69,6 +69,7 @@ final class TerminalUI: ViewerUI {
     // a placement of one cell, under the background of the status bar's last cell, so it is on the
     // client by the time it shows
     private let placeAhead = ProcessInfo.processInfo.environment["TERM_PROGRAM"] == "herdr"
+    private var placedAhead = false // hidden placements under the bar, which hiding the bar would show
 
     // what atexit puts back
     private static var saved: (tty: Int32, mode: termios, frame: String, kitty: Bool, imageFiles: String?)?
@@ -629,6 +630,7 @@ final class TerminalUI: ViewerUI {
             if let stamp { loaded[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
             keep(key, id: id, bytes: sent.bytes)
             let cell = hidden ? Array("\u{1b}[\(rows);\(cols)H".utf8) : []
+            placedAhead = placedAhead || hidden
             Self.writeAll(tty, cell + sent.command + (hidden ? Array("\u{1b}[H".utf8) : []) + trimKept(sparing: key))
             schedulePrefetch()
             return
@@ -973,6 +975,10 @@ final class TerminalUI: ViewerUI {
             }
         }
         if viewer.barVisible, rows > 0 { out += Array("\u{1b}[\(rows);1H\u{1b}[0;7m\(statusLine())\u{1b}[0m".utf8) }
+        if placedAhead, !viewer.barVisible { // without the bar's background over them, they would show
+            placedAhead = false
+            out += Array(kept.values.map { Self.command("a=d,d=i,i=\($0.id),p=2,q=2") }.joined().utf8)
+        }
         out += Array("\u{1b}[H\u{1b}[?2026l".utf8) + after // home, where a stray warning cannot scroll the screen
         Self.writeAll(tty, out)
         if !imageDirty { schedulePrefetch() }

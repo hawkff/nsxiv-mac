@@ -227,6 +227,10 @@ elif [ "$mode" = herdr ]; then
     printf j >&3
     drawn -F "$(printf '\033_Ga=p,i=%s,p=1,' "$blue")" "j did not only place the image sent ahead"
     bar 2-blue.png "j did not name the second image"
+    # with the bar hidden, nothing covers that cell, so its placements go
+    printf b >&3
+    drawn -F "$(printf '\033_Ga=d,d=i,i=%s,p=2,' "$blue")" "hiding the bar left the hidden placement where it would show"
+    printf b >&3
 elif [ "$mode" = tmux ]; then
     # tmux asks the terminal's attributes as it starts, then passes on what the viewer asks
     drawn -F "$(printf '\033[c')" "tmux did not ask the terminal's attributes"
