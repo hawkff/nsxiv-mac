@@ -209,10 +209,10 @@ struct RegressionChecks {
         ]
         assert(typed.keys == named && typed.rest.isEmpty, "terminal bytes arrive as the keys X11 names: \(typed)")
         // Left cut in two between reads, where its last byte alone would be D, which drops the image
-        let cut = TerminalUI.keys(in: Array("k\u{1b}[".utf8))
-        let joined = TerminalUI.keys(in: cut.rest + Array("D".utf8))
-        assert(cut.keys == [Keystroke(key: "k")] && joined.keys == [Keystroke(key: "Left")] && joined.rest.isEmpty,
-               "a sequence a read cuts off joins the next read: \(cut) \(joined)")
+        let firstRead = TerminalUI.keys(in: Array("k\u{1b}[".utf8))
+        let secondRead = TerminalUI.keys(in: firstRead.rest + Array("D".utf8))
+        assert(firstRead.keys == [Keystroke(key: "k")] && secondRead.keys == [Keystroke(key: "Left")]
+               && secondRead.rest.isEmpty, "a sequence a read cuts off joins the next read: \(firstRead) \(secondRead)")
         assert(TerminalUI.keys(in: [0x1b]).rest == [0x1b], "a lone escape waits to tell Escape from a sequence")
         assert(TerminalUI.printable("a\u{1b}]52;c;eA==\u{7}b\u{9b}.png") == "a?]52;c;eA==?b?.png",
                "control characters in a name never reach the terminal")
