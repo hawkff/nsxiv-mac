@@ -205,9 +205,14 @@ struct RegressionChecks {
         let named: [Keystroke?] = [
             Keystroke(key: "j"), Keystroke(key: "Up"), Keystroke(key: "Left", ctrl: true), Keystroke(key: "x", ctrl: true),
             Keystroke(key: "Return"), Keystroke(key: "BackSpace"), Keystroke(key: "Delete"), Keystroke(key: "F1"),
-            Keystroke(key: " ", ctrl: true), nil, Keystroke(key: "Escape"), Keystroke(key: "j"),
+            Keystroke(key: " ", ctrl: true), nil, Keystroke(key: "j"), // Alt-j is j, as on X11
         ]
         assert(typed.keys == named && typed.rest.isEmpty, "terminal bytes arrive as the keys X11 names: \(typed)")
+        // a sequence another escape cuts short is one key without a name, so its end is no D;
+        // a modifier as low as Int.min cannot overflow
+        let odd = TerminalUI.keys(in: Array("\u{1b}[\u{1b}[D\u{1b}[1;-9223372036854775808A".utf8))
+        assert(odd.keys == [nil, Keystroke(key: "Left"), Keystroke(key: "Up")] && odd.rest.isEmpty,
+               "broken sequences end as one key without a name: \(odd)")
         // Left cut in two between reads, where its last byte alone would be D, which drops the image
         let firstRead = TerminalUI.keys(in: Array("k\u{1b}[".utf8))
         let secondRead = TerminalUI.keys(in: firstRead.rest + Array("D".utf8))

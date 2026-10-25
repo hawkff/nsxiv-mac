@@ -58,17 +58,9 @@ final class TerminalUI: ViewerUI {
             + (version.count > 1 && (version[0], version[1]) >= (1, 16) ? ["--probe=off"] : [])
         renderer = ImlibRenderer(viewer: viewer)
         renderer.drawsBar = false // the terminal's last line shows it
-
-        // keys as they come and without echo, C-c and C-z among them; output still turns "\n"
-        // into "\r\n", which chafa's rows rely on
-        var raw = mode
-        raw.c_iflag &= ~tcflag_t(BRKINT | ICRNL | INPCK | ISTRIP | IXON)
-        raw.c_lflag &= ~tcflag_t(ECHO | ICANON | IEXTEN | ISIG)
-        tcsetattr(tty, TCSAFLUSH, &raw)
-        // the alternate screen, with no cursor and no wrapping, so a line too long cannot scroll it
-        Self.writeAll(tty, Array("\u{1b}[?1049h\u{1b}[?25l\u{1b}[?7l".utf8))
         Self.saved = (tty, mode, frame)
         atexit { TerminalUI.restoreTerminal() }
+        Self.enter()
 
         renderer.onThumbnail = { [unowned self] in self.setNeedsRedraw(after: 0.3) }
         viewer.ui = self
@@ -79,7 +71,8 @@ final class TerminalUI: ViewerUI {
         let resized = DispatchSource.makeSignalSource(signal: SIGWINCH, queue: .main)
         resized.setEventHandler { [unowned self] in self.layoutChanged() }
         sources.append(resized)
-        for stop in [SIGINT, SIGTERM] {
+        // a kill, or a closed terminal, ends the viewer as q does
+        for stop in [SIGINT, SIGTERM, SIGHUP] {
             signal(stop, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: stop, queue: .main)
             source.setEventHandler { viewer.quit() }
@@ -96,12 +89,39 @@ final class TerminalUI: ViewerUI {
     // -o and Q print to the terminal once it is back
     func willQuit() { Self.restoreTerminal() }
 
-    private static func restoreTerminal() {
+    // the handler gets the terminal as the viewer found it, for its prompts and its output
+    func keyHandlerWillRun() { Self.leave() }
+
+    func keyHandlerDidRun() {
+        Self.enter()
+        setNeedsRedraw() // the alternate screen comes back empty
+    }
+
+    // raw keys and the alternate screen, for as long as the viewer has the terminal
+    private static func enter() {
+        guard let saved = Self.saved else { return }
+        // keys as they come and without echo, C-c and C-z among them; output turns "\n" into
+        // "\r\n", which chafa's rows rely on
+        var raw = saved.mode
+        raw.c_iflag &= ~tcflag_t(BRKINT | ICRNL | INPCK | ISTRIP | IXON)
+        raw.c_oflag |= tcflag_t(OPOST | ONLCR)
+        raw.c_lflag &= ~tcflag_t(ECHO | ICANON | IEXTEN | ISIG)
+        tcsetattr(saved.tty, TCSAFLUSH, &raw)
+        // the alternate screen, with no cursor and no wrapping, so a line too long cannot scroll it
+        writeAll(saved.tty, Array("\u{1b}[?1049h\u{1b}[?25l\u{1b}[?7l".utf8))
+    }
+
+    private static func leave() {
         guard var saved = Self.saved else { return }
-        Self.saved = nil
         writeAll(saved.tty, Array("\u{1b}[0m\u{1b}[?7h\u{1b}[?25h\u{1b}[?1049l".utf8))
         tcsetattr(saved.tty, TCSAFLUSH, &saved.mode)
-        unlink(saved.frame)
+    }
+
+    private static func restoreTerminal() {
+        guard let frame = Self.saved?.frame else { return }
+        leave()
+        unlink(frame)
+        Self.saved = nil
     }
 
     // MARK: - keys
@@ -149,17 +169,29 @@ final class TerminalUI: ViewerUI {
             let b = bytes[i]
             if b == 0x1b {
                 guard i + 1 < bytes.count else { return (keys, [b]) } // Escape, or a sequence's start
-                guard bytes[i + 1] == 0x5b || bytes[i + 1] == 0x4f else { // not ESC [ or ESC O
-                    keys.append(Keystroke(key: "Escape")) // as Alt sends it before the key
-                    i += 1
+                let next = bytes[i + 1]
+                guard next == 0x5b || next == 0x4f else { // not ESC [ or ESC O
+                    if (0x20...0x7e).contains(next) { // Alt and a key: the key, as on X11
+                        keys.append(Keystroke(key: String(UnicodeScalar(next))))
+                        i += 2
+                    } else {
+                        keys.append(Keystroke(key: "Escape"))
+                        i += 1
+                    }
                     continue
                 }
+                // parameters, then the final byte; any other byte cuts the sequence short
                 var end = i + 2
-                while end < bytes.count, !(0x40...0x7e).contains(bytes[end]) { end += 1 }
+                while end < bytes.count, (0x20...0x3f).contains(bytes[end]) { end += 1 }
                 guard end < bytes.count else { return (keys, Array(bytes[i...])) }
+                guard (0x40...0x7e).contains(bytes[end]) else {
+                    keys.append(nil) // and the byte that cut it starts the next key
+                    i = end
+                    continue
+                }
                 let params = String(decoding: bytes[(i + 2)..<end], as: UTF8.self).split(separator: ";").map(String.init)
                 // the second parameter is 1 plus the modifier bits, 4 being Ctrl: ESC [1;5A is C-Up
-                let ctrl = params.count > 1 && ((Int(params[1]) ?? 1) - 1) & 4 != 0
+                let ctrl = params.count > 1 && (Int(params[1]).map { $0 > 1 && ($0 - 1) & 4 != 0 } ?? false)
                 keys.append(sequenceName(bytes[end], params.first, ss3: bytes[i + 1] == 0x4f)
                     .map { Keystroke(key: $0, ctrl: ctrl) })
                 i = end + 1
@@ -280,7 +312,8 @@ final class TerminalUI: ViewerUI {
 
     private func render() {
         var out = Array("\u{1b}[H".utf8)
-        if cols > 0, imageRows > 0, let drawn = drawnRows(cols: cols, rows: imageRows) { out += drawn }
+        // a frame chafa could not draw clears the screen, so no other image stays under this name
+        if cols > 0, imageRows > 0 { out += drawnRows(cols: cols, rows: imageRows) ?? Array("\u{1b}[2J".utf8) }
         if viewer.barVisible, rows > 0 { out += Array("\u{1b}[\(rows);1H\u{1b}[0;7m\(statusLine())\u{1b}[0m".utf8) }
         out += Array("\u{1b}[H".utf8) // where a stray warning lands without scrolling the screen
         Self.writeAll(tty, out)
@@ -305,6 +338,7 @@ final class TerminalUI: ViewerUI {
         guard let canvas else { return nil }
         renderer.render(into: canvas, width: width, height: height, scale: 1)
         imlib_context_set_image(canvas)
+        truncate(frame, 0) // a save that fails leaves chafa no older frame to draw
         imlib_save_image(frame)
         guard var drawn = Self.output(of: chafa + ["--size=\(cols)x\(rows)", frame]).map({ [UInt8]($0) })
         else { return nil }

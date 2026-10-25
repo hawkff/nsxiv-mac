@@ -38,10 +38,15 @@ protocol ViewerUI: AnyObject {
     func enterEditMode() -> Bool
     // the viewer is about to print to stdout and exit
     func willQuit()
+    // around a key-handler, which a terminal frontend hands the terminal to
+    func keyHandlerWillRun()
+    func keyHandlerDidRun()
 }
 
 extension ViewerUI {
     func willQuit() {}
+    func keyHandlerWillRun() {}
+    func keyHandlerDidRun() {}
 }
 
 // The image list, marks, modes and key bindings, shared by both windowing systems.
@@ -552,16 +557,19 @@ final class Viewer {
         // timers and X events queued on main
         let exited = DispatchSemaphore(value: 0)
         proc.terminationHandler = { _ in exited.signal() }
+        ui?.keyHandlerWillRun()
         do {
             try proc.run()
         } catch {
             warn("key-handler failed: \(error.localizedDescription)")
+            ui?.keyHandlerDidRun()
             return
         }
         // a handler may stop reading early; with SIGPIPE ignored the write fails instead
         try? pipe.fileHandleForWriting.write(contentsOf: Data(targets.map { files[$0].path + "\n" }.joined().utf8))
         try? pipe.fileHandleForWriting.close()
         exited.wait()
+        ui?.keyHandlerDidRun()
         // the handler may have edited, moved or deleted its files
         ui?.invalidateThumbnails(targets.map { files[$0] })
         let gone = targets.filter { !FileManager.default.fileExists(atPath: files[$0].path) }

@@ -248,6 +248,7 @@ final class ImlibRenderer {
                 failedThumbs.insert(path)
             }
             onThumbnail()
+            scheduleThumbnail() // the next one, without waiting for a frame that may come later
         }
     }
 
