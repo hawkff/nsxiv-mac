@@ -155,13 +155,14 @@ elif [ "$mode" = sixel ]; then
     grep -a -q -F '"1;1;1000;576#' "$out" || fail "the viewer drew no sixel image of 1000x576 pixels, but
 $(grep -a -o -E '.{0,24}"1;1;[0-9]+;[0-9]+.{0,8}' "$out" | head -2 | od -c | head -6)"
     drawn -F 1-red.png "the status bar never named the first image"
-    drawn -E '#[0-9]+;2;100;0;0' "the first sixel image has no red"
+    # chafa's colors, in percent, may be a step off
+    drawn -E '#[0-9]+;2;(9[5-9]|100);[0-4];[0-4]([^0-9]|$)' "the first sixel image has no red"
     printf j >&3
     drawn -F 2-blue.png "j did not name the second image"
-    drawn -E '#[0-9]+;2;0;0;100' "j drew no blue sixel image"
+    drawn -E '#[0-9]+;2;[0-4];[0-4];(9[5-9]|100)([^0-9]|$)' "j drew no blue sixel image"
     magick -size 2000x1160 xc:lime "$pics/1-red.png"
     printf k >&3
-    drawn -E '#[0-9]+;2;0;100;0' "k drew the first image as it was before it changed"
+    drawn -E '#[0-9]+;2;[0-4];(9[5-9]|100);[0-4]([^0-9]|$)' "k drew the first image as it was before it changed"
     printf j >&3
     for _ in $(seq 100); do [ "$(sixels)" -ge 4 ] && break; sleep 0.1; done
     [ "$(sixels)" -eq 4 ] || fail "the viewer drew $(sixels) sixel images, not 4"
