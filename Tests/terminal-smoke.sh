@@ -151,7 +151,9 @@ elif [ "$mode" = sixel ]; then
     printf '\033[?62;4;22c' >&3 # foot's answer: sixels, and no kitty graphics
     # 100 columns of 10 pixels, and 29 rows of 20 above the bar in whole bands of 6: 1000x576,
     # in raster attributes after an introducer that differs between chafa versions
-    drawn -F '"1;1;1000;576#' "the viewer drew no sixel image of 1000x576 pixels"
+    for _ in $(seq 100); do [ "$(sixels)" -ge 1 ] && break; sleep 0.1; done
+    grep -a -q -F '"1;1;1000;576#' "$out" || fail "the viewer drew no sixel image of 1000x576 pixels, but
+$(grep -a -o -E '.{0,24}"1;1;[0-9]+;[0-9]+.{0,8}' "$out" | head -2 | od -c | head -6)"
     drawn -F 1-red.png "the status bar never named the first image"
     drawn -E '#[0-9]+;2;100;0;0' "the first sixel image has no red"
     printf j >&3
