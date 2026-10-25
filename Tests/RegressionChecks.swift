@@ -227,11 +227,11 @@ struct RegressionChecks {
         assert(late.keys == [Keystroke(key: "j"), Keystroke(key: "k")] && late.rest == Array("\u{1b}_Gi=3".utf8),
                "kitty graphics replies never arrive as keys: \(late)")
         // a read that ends after ESC _ may have cut a reply in two, whose G and the rest are no keys
-        let cut = TerminalUI.keys(in: Array("\u{1b}_".utf8))
-        assert(cut.keys.isEmpty && cut.rest == [0x1b, 0x5f]
-               && TerminalUI.keys(in: cut.rest + Array("Gi=77,p=1;ENOENT:No such image\u{1b}\\".utf8)).keys.isEmpty
+        let halfReply = TerminalUI.keys(in: Array("\u{1b}_".utf8))
+        assert(halfReply.keys.isEmpty && halfReply.rest == [0x1b, 0x5f]
+               && TerminalUI.keys(in: halfReply.rest + Array("Gi=77,p=1;ENOENT:No such image\u{1b}\\".utf8)).keys.isEmpty
                && TerminalUI.keys(in: Array("\u{1b}_j".utf8)).keys == [Keystroke(key: "_"), Keystroke(key: "j")],
-               "Alt and _ is still _, as on X11, and a reply cut after ESC _ is no keys: \(cut)")
+               "Alt and _ is still _, as on X11, and a reply cut after ESC _ is no keys: \(halfReply)")
         // what the probe read: herdr's answers, a j typed meanwhile, and the start of a Left whose D
         // comes in the next read, which must not count alone, as D would drop the image
         let probed = TerminalUI.keys(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62;22cj\u{1b}[".utf8))
