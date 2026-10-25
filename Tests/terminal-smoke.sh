@@ -224,13 +224,19 @@ elif [ "$mode" = herdr ]; then
     drawn -F "$ahead" "the viewer did not place the image it sent ahead in the bar's last cell"
     blue=$(grep -a -o -E "$(printf '\033')\[30;100H$(printf '\033')_Ga=T,i=[0-9]+" "$out" | tail -1 | sed 's/.*i=//')
     drawn -F "$(printf '\033_Ga=T,i=%s,p=2,c=1,r=1,z=-1073741825,C=1,' "$blue")" "the image sent ahead did not go as one hidden cell"
+    transmissions=$(sent a=T)
     printf j >&3
-    drawn -F "$(printf '\033_Ga=p,i=%s,p=1,' "$blue")" "j did not only place the image sent ahead"
+    drawn -F "$(printf '\033_Ga=p,i=%s,p=1,' "$blue")" "j did not place the image sent ahead"
     bar 2-blue.png "j did not name the second image"
+    [ "$(sent a=T)" = "$transmissions" ] || fail "j sent the image sent ahead again"
     # with the bar hidden, nothing covers that cell, so the hidden placement goes, alone or with its image
     printf b >&3
     drawn -E "$(printf '\033')_Ga=d,d=(i,i=$blue,p=2|I,i=$blue)," "hiding the bar left the hidden placement where it would show"
+    # with the bar back, every frame is drawn anew and the first image goes ahead again, which
+    # must come before the mark's counts
     printf b >&3
+    for _ in $(seq 100); do [ "$(grep -a -o -F "$ahead" "$out" | wc -l)" -ge 2 ] && break; sleep 0.1; done
+    [ "$(grep -a -o -F "$ahead" "$out" | wc -l)" -ge 2 ] || fail "with the bar back, the viewer did not send the first image ahead again"
 elif [ "$mode" = tmux ]; then
     # tmux asks the terminal's attributes as it starts, then passes on what the viewer asks
     drawn -F "$(printf '\033[c')" "tmux did not ask the terminal's attributes"
