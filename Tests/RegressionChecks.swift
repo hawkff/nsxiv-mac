@@ -193,6 +193,7 @@ struct RegressionChecks {
     }
     #else
     static func checkLinuxHelpers(directory: URL) throws {
+        let fm = FileManager.default
         assert(keyName(forKeysym: 0x47) == "G" && keyName(forKeysym: 0x20) == " ", "printable keys arrive as typed")
         assert(keyName(forKeysym: 0xff0d) == "Return" && keyName(forKeysym: 0xff51) == "Left",
                "other keys go by keysym name")
@@ -275,6 +276,54 @@ struct RegressionChecks {
         var gif = Array("GIF89a".utf8) + le(20) + le(10)
         gif += [0x80, 0, 0, 0, 0, 0, 255, 0, 0] // two colors, black and red
         gif += frame(12, 3, 4, 4, color: 1) + frame(0, 0, 1, 1, color: 0) + [0x3b]
+        // the terminal's PNG writer gives back, through libpng, the pixels it took
+        guard let pixelsIn = imlib_create_image(3, 2) else { fatalError("no image") }
+        imlib_context_set_image(pixelsIn)
+        imlib_image_set_has_alpha(0)
+        let colors: [UInt32] = [0xffff_0000, 0xff00_ff00, 0xff00_00ff, 0xff12_3456, 0xff00_0000, 0xffff_ffff]
+        let writable = imlib_image_get_data()!
+        for (i, color) in colors.enumerated() { writable[i] = color }
+        imlib_image_put_back_data(writable)
+        let frameURL = directory.appendingPathComponent("frame.png")
+        try TerminalUI.png(of: pixelsIn)!.write(to: frameURL)
+        imlib_context_set_image(pixelsIn)
+        imlib_free_image()
+        guard let pixelsOut = imlib_load_image_immediately_without_cache(frameURL.path) else { fatalError("libpng rejects the PNG") }
+        imlib_context_set_image(pixelsOut)
+        let decodedPixels = imlib_image_get_data_for_reading_only()!
+        assert(imlib_image_get_width() == 3 && imlib_image_get_height() == 2
+               && (0..<6).map { decodedPixels[$0] & 0xff_ffff } == colors.map { $0 & 0xff_ffff },
+               "a PNG frame keeps its pixels")
+        imlib_free_image()
+
+        // A revisit takes the decoded image from Imlib2's cache while the file's time stays, which an
+        // hour ahead a rewrite's ctime cannot pass; a reload, an invalidation and a new time read the file.
+        let renderer = ImlibRenderer(viewer: Viewer(options: Options(), files: []))
+        let later = Date().addingTimeInterval(3600)
+        func picture(_ name: String, width: Int32, time: Date) throws -> URL {
+            let url = directory.appendingPathComponent(name)
+            imlib_context_set_image(imlib_create_image(width, 10)!)
+            imlib_image_set_format("png")
+            imlib_save_image(url.path)
+            imlib_free_image()
+            try fm.setAttributes([.modificationDate: time], ofItemAtPath: url.path)
+            return url
+        }
+        let cached = try picture("cached.png", width: 30, time: later)
+        let other = try picture("other.png", width: 40, time: later)
+        func loadedWidth(_ url: URL) -> CGFloat? { renderer.loadImage(url)?.size.width }
+        assert(loadedWidth(cached) == 30 && loadedWidth(other) == 40)
+        _ = try picture("cached.png", width: 50, time: later)
+        assert(loadedWidth(cached) == 30, "a revisit takes an unchanged file's decoded image from the cache")
+        assert(loadedWidth(cached) == 50, "a reload reads the file again")
+        _ = loadedWidth(other)
+        _ = try picture("cached.png", width: 60, time: later)
+        renderer.invalidateThumbnails([FileEntry(path: cached.path)])
+        assert(loadedWidth(cached) == 60, "an invalidated file is read again")
+        _ = loadedWidth(other)
+        _ = try picture("cached.png", width: 70, time: later.addingTimeInterval(60))
+        assert(loadedWidth(cached) == 70, "a revisit reads a file whose time changed")
+
         let patch = directory.appendingPathComponent("patch.gif")
         try Data(gif).write(to: patch)
         guard let thumb = ImlibRenderer.makeThumbnail(patch.path) else { fatalError("no thumbnail for patch.gif") }

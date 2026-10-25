@@ -46,6 +46,9 @@ enum Config {
     static let selectionColor = "#3478f6"
     static let markColor = "#ffcc00"
     static let barFont = "monospace:pixelsize=13"
+    // decoded images Imlib2 keeps for a revisit, as nsxiv's CACHE_SIZE: a share of the memory, capped
+    static let imageCachePercent = 3
+    static let imageCacheLimit = 256 << 20
     #endif
 
     // fraction of window width used as prev/next click zones

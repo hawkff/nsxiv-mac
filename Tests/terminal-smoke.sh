@@ -88,6 +88,10 @@ else
 fi
 printf m >&3
 drawn -F '*1 |' "m did not mark the image"
+# the mark, on the last image, changed only the status bar, which goes without the image
+if [ "$mode" = kitty ] && [ "$(grep -a -o -F "$(printf '\033_Ga=T,f=100')" "$out" | wc -l)" -ne 2 ]; then
+    fail "the mark sent the image again"
+fi
 kill -TERM "$(cat "$pics/pid")"
 wait "$session" || fail "SIGTERM did not end the viewer cleanly"
 if grep -a -q 'the terminal mode changed' "$out"; then fail "the viewer left the terminal in another mode"; fi

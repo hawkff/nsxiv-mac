@@ -15,8 +15,8 @@ package.targets += [
     .systemLibrary(
         name: "CX11",
         path: "Sources/CX11",
-        pkgConfig: "x11 imlib2 fontconfig",
-        providers: [.apt(["libx11-dev", "libimlib2-dev", "libfontconfig-dev"])]
+        pkgConfig: "x11 imlib2 fontconfig zlib",
+        providers: [.apt(["libx11-dev", "libimlib2-dev", "libfontconfig-dev", "zlib1g-dev"])]
     ),
     .target(
         name: "CWayland",

@@ -3,5 +3,6 @@ module CX11 [system] {
     link "X11"
     link "Imlib2"
     link "fontconfig"
+    link "z"
     export *
 }
