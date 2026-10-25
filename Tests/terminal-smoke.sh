@@ -162,6 +162,7 @@ size() { magick "$pics/image-$1.png" -format '%wx%h' info:; }
 hue() {
     echo "$1" | awk -F, '{ hi = 250; lo = 5
         if ($4 <= lo) print "clear"
+        else if ($4 < hi) print $0
         else if ($1 >= hi && $2 <= lo && $3 <= lo) print "red"
         else if ($1 <= lo && $2 >= hi && $3 <= lo) print "lime"
         else if ($1 <= lo && $2 <= lo && $3 >= hi) print "blue"
@@ -206,6 +207,8 @@ $(grep -a -o -E '.{0,24}"1;1;[0-9]+;[0-9]+.{0,8}' "$out" | head -2 | od -c | hea
     printf j >&3
     for _ in $(seq 100); do [ "$(sixels)" -ge 4 ] && break; sleep 0.1; done
     [ "$(sixels)" -eq 4 ] || fail "the viewer drew $(sixels) sixel images, not 4"
+    # each on a cleared screen, as its transparent pixels would let the image before show
+    [ "$(grep -a -o -F "$(printf '\033[2J\033P')" "$out" | wc -l)" -eq 4 ] || fail "a sixel image came without the screen cleared first"
     # chafa ran for the red image, the blue one ahead, and the lime one: j showed blue's frame twice
     [ "$(wc -l <"$pics/chafa-runs") $(grep -c -e '-ahead$' "$pics/chafa-runs")" = "3 1" ] ||
         fail "chafa made $(wc -l <"$pics/chafa-runs") frames, not 3, one ahead: $(cat "$pics/chafa-runs")"
@@ -278,7 +281,8 @@ else
     sends a=T 2 "the viewer did not send the image the terminal dropped again"
     blue=$(last a=T)
     picture "$blue"
-    [ "$(hue "$(pixel "$blue" 400,232)")" = blue ] || fail "the viewer sent $(pixel "$blue" 400,232) in place of the blue image"
+    [ "$(hue "$(pixel "$blue" 400,232)") $(hue "$(pixel "$blue" 5,5)")" = "blue clear" ] ||
+        fail "the viewer sent $(pixel "$blue" 400,232) amid $(pixel "$blue" 5,5) in place of the blue image amid clear pixels"
     [ "$(grep -a -o -F "$(printf '\033_Ga=d,d=A,')" "$out" | wc -l)" -eq 1 ] ||
         fail "the viewer deleted every image on the screen after the first frame, freeing those it kept"
     magick -size 2000x1160 xc:lime "$pics/1-red.png"
