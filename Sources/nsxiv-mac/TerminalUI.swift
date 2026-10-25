@@ -768,9 +768,9 @@ final class TerminalUI: ViewerUI {
     // file that changed loads again
     func loadImage(_ url: URL) -> ImageInfo? {
         if let file = loaded[url.path], !file.info.isAnimated, kept.keys.contains(where: { $0.path == url.path }) {
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            DispatchQueue.global(qos: .userInitiated).async {
                 guard Self.stamp(url.path) != file.stamp else { return }
-                DispatchQueue.main.async {
+                DispatchQueue.main.async { [weak self] in
                     guard let self, self.viewer.currentEntry?.path == url.path else { return }
                     self.viewer.reloadCurrent()
                 }
