@@ -167,8 +167,13 @@ jobs:
           tar -xzf nsxiv-mac-linux.tar.gz
           docker run --rm --privileged -v "$PWD:/w" -w /w archlinux:latest bash -c '
             pacman -Syu --noconfirm --needed hyprland mesa imlib2 fontconfig libx11 libxkbcommon wayland \
-              ttf-dejavu imagemagick jq >/dev/null
+              ttf-dejavu imagemagick jq grim >/dev/null
             sh Tests/hyprland-smoke.sh ./nsxiv-mac'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hyprland-screenshots
+          path: hyprland-shots
 
   plasma5:
     runs-on: ubuntu-24.04

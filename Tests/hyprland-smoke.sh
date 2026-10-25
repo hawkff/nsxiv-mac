@@ -48,6 +48,7 @@ WAYLAND_DISPLAY=$socket "$bin" -S 4 "$pics" &
 pid=$!
 sleep 6 # the large image shows from 4 to 8 seconds
 kill -0 "$pid"
+mkdir -p hyprland-shots && WAYLAND_DISPLAY=$socket grim hyprland-shots/hyprland.png || true # TEMP
 window=$(hyprctl -j clients | jq -r --argjson pid "$pid" '.[] | select(.pid == $pid) | "\(.floating) \(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"')
 echo "window (floating x y width height): $window"
 # shellcheck disable=SC2086
