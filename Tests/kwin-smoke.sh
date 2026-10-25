@@ -122,8 +122,11 @@ set -- $before
 [ "$after" = "$before" ] || fail "fullscreen moved the parked window from $before to $after"
 
 kill "$corner" "$parked"
-sleep 2
+# KWin unloads a script once it has removed the window, which a busy KWin 5.27 takes seconds for
 for pid in $corner $parked; do
-    kwin /Scripting org.kde.kwin.Scripting.isScriptLoaded string:"nsxiv-mac-$pid" | grep -q 'boolean false' ||
-        fail "the KWin script of viewer $pid outlived its window"
+    for _ in $(seq 50); do
+        kwin /Scripting org.kde.kwin.Scripting.isScriptLoaded string:"nsxiv-mac-$pid" | grep -q 'boolean false' && continue 2
+        sleep 0.2
+    done
+    fail "the KWin script of viewer $pid outlived its window"
 done
