@@ -253,11 +253,14 @@ final class WaylandUI: ViewerUI {
         XDG_TOPLEVEL_STATE_TILED_TOP, XDG_TOPLEVEL_STATE_TILED_BOTTOM,
     ].map(\.rawValue))
 
-    // Hyprland and COSMIC report floating windows as tiled too, and Hyprland as maximized, so
-    // that clients drop their shadows; a tiled one there gets a size the viewer did not pick
+    // COSMIC marks floating windows as tiled too when it rounds their corners itself; a tiled
+    // one there still gets sizes the viewer did not pick, which bind. Hyprland marks every
+    // window as tiled and maximized, and keeps the size it gave a window that resizes itself,
+    // so there every size binds.
     private var bindingStates: Set<UInt32> {
-        desktops.isDisjoint(with: ["hyprland", "cosmic"]) ? Self.heldStates
-            : [XDG_TOPLEVEL_STATE_FULLSCREEN.rawValue, XDG_TOPLEVEL_STATE_RESIZING.rawValue]
+        guard desktops.contains("cosmic") else { return Self.heldStates }
+        return [XDG_TOPLEVEL_STATE_MAXIMIZED.rawValue, XDG_TOPLEVEL_STATE_FULLSCREEN.rawValue,
+                XDG_TOPLEVEL_STATE_RESIZING.rawValue]
     }
 
     private func configure(_ serial: UInt32) {

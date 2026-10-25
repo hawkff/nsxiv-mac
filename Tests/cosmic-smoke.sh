@@ -3,8 +3,8 @@
 # small first window in the middle of its screen; the slideshow's second image is larger than
 # the screen, so a window that kept its top-left corner and grew to fit it would run past the
 # bottom-right edge. That image has four colored quarters: a screenshot shows all four at the
-# same size only when no part of the window ran past an edge. The screenshot lands in $2. Run
-# under dbus-run-session.
+# same size only when the image did not run past an edge, and the status bar below it shows
+# whole above the bottom edge. The screenshot lands in $2. Run under dbus-run-session.
 set -eu
 bin=$1
 shots=$2
@@ -37,7 +37,8 @@ next_socket() {
     fail "no Wayland socket appeared"
 }
 
-echo 'output HEADLESS-1 resolution 1280x800' >"$conf/sway.conf"
+# with no title bar or border, COSMIC's screen is the whole of sway's
+printf 'output HEADLESS-1 resolution 1280x800\ndefault_border none\n' >"$conf/sway.conf"
 WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c "$conf/sway.conf" &
 sway=$!
 host=$(next_socket)
@@ -67,3 +68,8 @@ for color in yellow cyan blue; do
     eval "dw=\$((w_$color - w_magenta)) dh=\$((h_$color - h_magenta))"
     [ "${dw#-}" -le 1 ] && [ "${dh#-}" -le 1 ] || fail "the $color quarter is cut: the window ran past the edge"
 done
+# the window grows across to the right edge but has room below, so a bar the bottom edge cut
+# would reach it
+set -- $(box '#eeeeee')
+echo "status bar: ${1}x$2 at $3,$4"
+[ "$2" -ge 20 ] && [ $(($4 + $2)) -lt 800 ] || fail "the status bar ran past the bottom edge"

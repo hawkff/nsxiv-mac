@@ -57,16 +57,23 @@ export NIRI_SOCKET
 
 WAYLAND_DISPLAY=$nested "$bin" -S 4 "$pics" &
 pid=$!
-sleep 6 # the large image shows from 4 to 8 seconds
+# the viewer names its window after the image it shows
+shown() { niri msg --json windows | jq -e --argjson pid "$pid" 'any(.[]; .pid == $pid and .title == "2-large.png")' >/dev/null; }
+for _ in $(seq 100); do shown && break; sleep 0.1; done
+shown || { echo "the viewer did not show the large image" >&2; exit 1; }
+sleep 1 # time to grow
 kill -0 "$pid"
-output=$(niri msg --json outputs | jq -c '[.[] | .logical][0] | [.width, .height]')
-window=$(niri msg --json windows | jq -c --argjson pid "$pid" '.[] | select(.pid == $pid) |
-    [.is_floating, .layout.tile_pos_in_workspace_view[0], .layout.tile_pos_in_workspace_view[1], .layout.tile_size[0], .layout.tile_size[1]]')
-echo "output: $output; window (floating, x, y, width, height): $window"
-# shellcheck disable=SC2046
-set -- $(echo "$output $window" | tr -d '[]' | tr ',' ' ')
-[ "$3" = true ] || { echo "the window is not floating" >&2; exit 1; }
-w=$1 h=$2 x=${4%.*} y=${5%.*} tw=${6%.*} th=${7%.*}
-[ "$tw" -gt 400 ] || { echo "the window did not grow into the room it had" >&2; exit 1; }
-[ "$x" -ge 0 ] && [ "$y" -ge 0 ] && [ $((x + tw)) -le "${w%.*}" ] && [ $((y + th)) -le "${h%.*}" ] ||
-    { echo "the grown window ran past niri's output" >&2; exit 1; }
+output=$(niri msg --json outputs | jq -c '[.[] | .logical][0] | {width, height}')
+window=$(niri msg --json windows | jq -c --argjson pid "$pid" '.[] | select(.pid == $pid) | .layout as $l |
+    {floating: .is_floating, x: $l.tile_pos_in_workspace_view[0], y: $l.tile_pos_in_workspace_view[1],
+     width: $l.tile_size[0], height: $l.tile_size[1]}')
+echo "output: $output; window: $window"
+[ -n "$window" ] || { echo "niri lists no viewer window" >&2; exit 1; }
+# niri reports logical pixels, which may be fractional
+problem=$(jq -rn --argjson o "$output" --argjson w "$window" '
+    if ($w.floating | not) then "the window is not floating"
+    elif $w.width <= 400 then "the window did not grow into the room it had"
+    elif $w.x < 0 or $w.y < 0 or $w.x + $w.width > $o.width or $w.y + $w.height > $o.height
+    then "the grown window ran past the output"
+    else empty end')
+[ -z "$problem" ] || { echo "$problem" >&2; exit 1; }

@@ -162,7 +162,7 @@ jobs:
         run: |
           sudo modprobe vkms || { sudo apt-get update && sudo apt-get install -y "linux-modules-extra-$(uname -r)" && sudo modprobe vkms; }
           ls -l /dev/dri
-      - name: Run under Hyprland, where a growing window must stay on screen
+      - name: Run under Hyprland, which keeps the size it gave a window
         run: |
           tar -xzf nsxiv-mac-linux.tar.gz
           docker run --rm --privileged -v "$PWD:/w" -w /w archlinux:latest bash -c '

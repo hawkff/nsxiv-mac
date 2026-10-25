@@ -1,10 +1,10 @@
 #!/bin/sh
 # Runs the Linux build in Hyprland on a virtual 1024x768 display (vkms), as root in a
-# container. Window rules open the viewer floating with room to its right and below; when the
-# slideshow's second image needs most of the screen, the viewer asks how much room it has
-# through a popup that Hyprland must trim to the screen's work area, and the window must stay
-# on screen. Hyprland draws no frames on such a display, so the check reads Hyprland's own log
-# and hyprctl instead of a screenshot.
+# container. Hyprland sizes a window when it maps it and keeps that size when the client
+# resizes itself later, cutting off what lies past it. A window rule opens the viewer
+# floating; when the slideshow's second image needs most of the screen, the viewer must fit
+# it into the size Hyprland gave and never ask for room to grow. Hyprland draws no frames on
+# such a display, so the check reads Hyprland's log and hyprctl instead of a screenshot.
 set -eu
 bin=$1
 pics=$(mktemp -d)
@@ -44,28 +44,19 @@ export HYPRLAND_INSTANCE_SIGNATURE
 socket=
 for candidate in "$XDG_RUNTIME_DIR"/wayland-[0-9]; do [ -S "$candidate" ] && socket=$(basename "$candidate"); done
 [ -n "$socket" ] || fail "Hyprland opened no Wayland socket"
-# shellcheck disable=SC2046
-set -- $(hyprctl -j monitors | jq -r '.[0] | "\(.width) \(.height)"')
-w=$1 h=$2
-echo "monitor: ${w}x$h"
 
 WAYLAND_DISPLAY=$socket "$bin" -S 4 "$pics" &
 pid=$!
-sleep 6 # the large image shows from 4 to 8 seconds
+# the viewer names its window after the image it shows
+shown() { hyprctl -j clients | jq -e --argjson pid "$pid" 'any(.[]; .pid == $pid and .title == "2-large.png")' >/dev/null; }
+for _ in $(seq 100); do shown && break; sleep 0.1; done
+shown || fail "the viewer did not show the large image"
+sleep 1 # a probe for room would have come by now
 kill -0 "$pid"
 
-# Hyprland logs where it puts each popup; the probe asks for a 1048576-pixel square
-trimmed=$(cat "$log" "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE"/*.log 2>/dev/null |
-    grep 'gets unconstrained to' | tail -1)
-echo "probe: ${trimmed:-none}"
-[ -n "$trimmed" ] || fail "Hyprland got no room probe"
-case $trimmed in *1048576*) fail "Hyprland left the room probe untrimmed" ;; esac
-
-window=$(hyprctl -j clients | jq -r --argjson pid "$pid" '.[] | select(.pid == $pid) | "\(.floating) \(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"')
-echo "window (floating x y width height): $window"
-# shellcheck disable=SC2086
-set -- $window
-[ $# -eq 5 ] || fail "hyprctl lists no viewer window"
-[ "$1" = true ] || fail "the window is not floating"
-[ "$2" -ge 0 ] && [ "$3" -ge 0 ] && [ $(($2 + $4)) -le "$w" ] && [ $(($3 + $5)) -le "$h" ] ||
-    fail "the window ran past the screen edge"
+window=$(hyprctl -j clients | jq -r --argjson pid "$pid" '.[] | select(.pid == $pid) | "\(.floating) \(.size[0])x\(.size[1])"')
+echo "window (floating size): $window"
+[ "${window%% *}" = true ] || fail "the window is not floating"
+logs=$(cat "$log" "$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE"/*.log 2>/dev/null || true)
+echo "$logs" | grep 'Map request dispatched' || fail "Hyprland's log shows no window"
+if echo "$logs" | grep 'gets unconstrained to'; then fail "the viewer asked for room to grow"; fi
