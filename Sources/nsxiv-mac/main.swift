@@ -7,6 +7,11 @@ import Foundation
 // a key-handler that stops reading its stdin must not kill the viewer
 signal(SIGPIPE, SIG_IGN)
 
+#if os(Linux)
+// the terminal frontend's helper, which makes frames ahead in a process of its own
+if CommandLine.arguments.dropFirst().first == "--frame-ahead" { TerminalUI.runAheadHelper() }
+#endif
+
 let options = Options.parse(Array(CommandLine.arguments.dropFirst()))
 
 var inputPaths = options.paths

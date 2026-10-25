@@ -32,6 +32,12 @@ final class TerminalUI: ViewerUI {
     private var aheadCanvas = Canvas() // for frames made ahead
     private var aheadBusy = false // a frame being made ahead
     private var aheadFiles = 0 // names for the files of frames made ahead
+    // the helper process that makes frames ahead, its jobs in the order it answers them, and the
+    // part of an answer read so far
+    private var helper: (process: Process, input: FileHandle, answers: DispatchSourceRead)?
+    private var helperJobs: [(job: AheadJob, forgotten: Int, reserved: Int)] = []
+    private var helperAnswer: [UInt8] = []
+    private var helperFailed = false
     private var cols = 80
     private var rows = 24
     private var cell = (width: 8.0, height: 16.0) // pixels, where the terminal says; else the usual 1:2 shape
@@ -638,10 +644,83 @@ final class TerminalUI: ViewerUI {
         schedulePrefetch()
     }
 
-    // job made on the main queue, between keys
+    // job made by the helper, on another core, with an Imlib2 of its own; made here, between keys,
+    // when the helper cannot run
     private func runAhead(_ job: AheadJob, forgotten: Int, reserved: Int) {
-        let frame = Self.makeAhead(job, renderer: renderer, canvas: &aheadCanvas)
-        sendAhead(job, frame, forgotten: forgotten, reserved: reserved)
+        guard let helper = helper ?? startHelper(), var line = try? JSONEncoder().encode(job) else {
+            let frame = Self.makeAhead(job, renderer: renderer, canvas: &aheadCanvas)
+            sendAhead(job, frame, forgotten: forgotten, reserved: reserved)
+            return
+        }
+        line.append(0x0a)
+        helperJobs.append((job, forgotten, reserved))
+        if (try? helper.input.write(contentsOf: line)) == nil { helperGone() }
+    }
+
+    // the same binary, in its helper's mode, reading jobs on its stdin
+    private func startHelper() -> (process: Process, input: FileHandle, answers: DispatchSourceRead)? {
+        guard !helperFailed else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/proc/self/exe")
+        process.arguments = ["--frame-ahead"]
+        let jobs = Pipe(), answers = Pipe()
+        process.standardInput = jobs
+        process.standardOutput = answers
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else {
+            helperFailed = true
+            return nil
+        }
+        let fd = answers.fileHandleForReading.fileDescriptor
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
+        source.setEventHandler { [unowned self] in self.readHelper(fd) }
+        source.resume()
+        helper = (process, jobs.fileHandleForWriting, source)
+        return helper
+    }
+
+    // the helper's answers, one JSON line a job, in order
+    private func readHelper(_ fd: Int32) {
+        var bytes = [UInt8](repeating: 0, count: 4096)
+        let n = read(fd, &bytes, bytes.count)
+        if n < 0, errno == EINTR || errno == EAGAIN { return }
+        guard n > 0 else { return helperGone() }
+        helperAnswer += bytes[..<n]
+        while let end = helperAnswer.firstIndex(of: 0x0a) {
+            let line = Data(helperAnswer[..<end])
+            helperAnswer.removeSubrange(...end)
+            guard !helperJobs.isEmpty else { continue }
+            let pending = helperJobs.removeFirst()
+            let frame = (try? JSONDecoder().decode(AheadFrame.self, from: line)) ?? AheadFrame()
+            sendAhead(pending.job, frame, forgotten: pending.forgotten, reserved: pending.reserved)
+        }
+    }
+
+    // a helper that ended, or stopped reading, makes no more frames; the main queue makes them
+    private func helperGone() {
+        helper?.answers.cancel()
+        helper = nil
+        helperFailed = true
+        for pending in helperJobs { unlink(pending.job.file) }
+        helperJobs = []
+        helperAnswer = []
+        aheadBusy = false
+    }
+
+    // The helper's side: jobs come as JSON lines on stdin and frames go back the same way, until
+    // the viewer, ending, closes its end
+    static func runAheadHelper() -> Never {
+        let renderer = ImlibRenderer(viewer: Viewer(options: Options(), files: []))
+        renderer.clearBackground = true
+        var canvas = Canvas()
+        while let line = readLine(strippingNewline: true) {
+            let frame = (try? JSONDecoder().decode(AheadJob.self, from: Data(line.utf8)))
+                .map { makeAhead($0, renderer: renderer, canvas: &canvas) } ?? AheadFrame()
+            var answer = (try? JSONEncoder().encode(frame)) ?? Data("{}".utf8)
+            answer.append(0x0a)
+            guard (try? FileHandle.standardOutput.write(contentsOf: answer)) != nil else { break }
+        }
+        exit(0)
     }
 
     // While no key comes, the next image, then the previous one, goes to the terminal in its
@@ -654,7 +733,9 @@ final class TerminalUI: ViewerUI {
         guard kitty || sixel, hasImageArea, !viewer.thumbnailMode else { return }
         let work = DispatchWorkItem { [unowned self] in self.prefetchNeighbor() }
         prefetch = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+        // the helper makes a kitty frame off the main queue, so it starts at once; sixels are drawn
+        // here, so they wait for keys that come in a burst
+        DispatchQueue.main.asyncAfter(deadline: .now() + (kitty && !helperFailed ? 0 : 0.1), execute: work)
     }
 
     private func prefetchNeighbor() {
