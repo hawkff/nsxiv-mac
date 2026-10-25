@@ -221,6 +221,18 @@ struct RegressionChecks {
         assert(TerminalUI.keys(in: [0x1b]).rest == [0x1b], "a lone escape waits to tell Escape from a sequence")
         assert(TerminalUI.printable("a\u{1b}]52;c;eA==\u{7}b\u{9b}.png") == "a?]52;c;eA==?b?.png",
                "control characters in a name never reach the terminal")
+        // herdr's answer, any terminal's answer, and an answer still on its way
+        assert(TerminalUI.kittyGraphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62;22c".utf8)) == true
+               && TerminalUI.kittyGraphics(in: Array("\u{1b}[?1;2c".utf8)) == false
+               && TerminalUI.kittyGraphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62".utf8)) == nil,
+               "the probe tells kitty graphics from their absence, once the device attributes came")
+        let png = Data((0..<5000).map { UInt8($0 & 0xff) })
+        let chunks = String(decoding: TerminalUI.kittyImage(png, id: 2, cols: 10, rows: 4), as: UTF8.self)
+            .components(separatedBy: "\u{1b}\\").filter { !$0.isEmpty }
+            .map { $0.dropFirst(3).split(separator: ";", maxSplits: 1).map(String.init) }
+        assert(chunks.count == 2 && chunks[0][0] == "a=T,f=100,t=d,i=2,q=2,C=1,c=10,r=4,m=1" && chunks[1][0] == "m=0,q=2"
+               && chunks[0][1].count == 4096 && chunks[0][1] + chunks[1][1] == png.base64EncodedString(),
+               "a kitty image goes in chunks of 4096 bytes of base64, the keys on the first: \(chunks.map { $0[0] })")
         let held = TerminalUI.collapsingRepeats([Keystroke?](repeating: Keystroke(key: "j"), count: 5)
             + [Keystroke(key: "k"), Keystroke(key: "k")])
         assert(held == [Keystroke(key: "j"), Keystroke(key: "k"), Keystroke(key: "k")],

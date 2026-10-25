@@ -78,7 +78,9 @@ jobs:
           dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac 1
           dbus-run-session -- sh Tests/mutter-smoke.sh .build/release/nsxiv-mac 2
       - name: Run in a terminal with no display, through chafa 1.14
-        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac symbols
+      - name: Run in a terminal with no display that shows kitty graphics
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac kitty
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -145,7 +147,7 @@ jobs:
       - name: Run under COSMIC, where a growing window must stay on screen
         run: dbus-run-session -- sh Tests/cosmic-smoke.sh .build/release/nsxiv-mac cosmic-shots
       - name: Run in a terminal with no display, through a chafa that probes terminals
-        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac
+        run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac symbols
       - uses: actions/upload-artifact@v4
         if: always()
         with:
