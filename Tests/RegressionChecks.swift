@@ -259,14 +259,14 @@ struct RegressionChecks {
                "tmux passes kitty graphics with allow-passthrough to a client with UTF-8, sixels where it and its client have them, and neither to another tmux")
         assert(TerminalUI.passthrough("\u{1b}_Ga=q\u{1b}\\") == "\u{1b}Ptmux;\u{1b}\u{1b}_Ga=q\u{1b}\u{1b}\\\u{1b}\\",
                "a command for the terminal around tmux goes in tmux's passthrough, its escapes doubled")
-        // two rows of two cells of an image whose id has the high byte 3: each cell names its row,
-        // its column and that byte, the diacritics for 0, 1 and 3 being U+0305, U+030D and U+0310
-        assert(TerminalUI.placeholderCells(columns: 2, rows: 2, high: 3)
-               == "\u{1b}[1;1H\u{10EEEE}\u{305}\u{305}\u{310}\u{10EEEE}\u{305}\u{30D}\u{310}"
-               + "\u{1b}[2;1H\u{10EEEE}\u{30D}\u{305}\u{310}\u{10EEEE}\u{30D}\u{30D}\u{310}"
-               && TerminalUI.placeholderCells(columns: 300, rows: 1, high: 0).unicodeScalars.suffix(5).map(\.value)
-               == [0x1d244, 0x305, 0x10eeee, 0x10eeee, 0x10eeee],
-               "placeholders name their rows, columns and the id's high byte in diacritics, and count on past the last")
+        // two rows of three cells of an image whose id has the high byte 3: the first cell of each
+        // row names the row, column 0 and that byte, the diacritics for 0, 1 and 3 being U+0305,
+        // U+030D and U+0310, and the cells after it count on
+        assert(TerminalUI.placeholderCells(columns: 3, rows: 2, high: 3)
+               == "\u{1b}[1;1H\u{10EEEE}\u{305}\u{305}\u{310}\u{10EEEE}\u{10EEEE}"
+               + "\u{1b}[2;1H\u{10EEEE}\u{30D}\u{305}\u{310}\u{10EEEE}\u{10EEEE}"
+               && TerminalUI.placeholderCells(columns: 0, rows: 2, high: 3).isEmpty,
+               "placeholders name their rows and the id's high byte in diacritics on the first cell of each row")
         // chafa's sixel image of two bands of 6 rows, padded with a third, cut back to its canvas
         let padded = Array("\u{1b}P0;1;0q\"1;1;4;18#0;2;100;0;0#0!4~-#0!4~-#0!4~\u{1b}\\".utf8)
         assert(TerminalUI.sixelImage(padded, height: 12) == Array("\u{1b}P0;1;0q\"1;1;4;12#0;2;100;0;0#0!4~-#0!4~\u{1b}\\".utf8)

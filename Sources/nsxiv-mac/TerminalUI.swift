@@ -465,16 +465,17 @@ final class TerminalUI: ViewerUI {
         return "\u{1b}[38;5;\(id & 0xff)m\(placeholderCache.cells)\u{1b}[39m"
     }
 
-    // U+10EEEE in each cell, its row, column and the id's high byte in diacritics, so the cells
-    // right of a tmux menu still name the image; past the last column a diacritic names, the cells
-    // count on from the one before.
+    // U+10EEEE in each cell, the row, column 0 and the id's high byte in diacritics on the first
+    // cell of each row, from which the cells after it count on. Diacritics on every cell would
+    // nearly triple the text, which tmux redraws a cell at a time as they come: past 8 bytes a
+    // cell, tmux drops what it has yet to send and redraws the window, and with allow-passthrough
+    // on it drops what passes through until it has.
+    // shortcut: a tmux menu over part of a row leaves the cells right of it blank until it closes
     static func placeholderCells(columns: Int, rows: Int, high: Int) -> String {
-        let named = min(columns, diacritics.count)
         var text = ""
-        for row in 0..<min(rows, diacritics.count) {
-            text += "\u{1b}[\(row + 1);1H"
-            for column in 0..<named { text += "\u{10EEEE}" + diacritics[row] + diacritics[column] + diacritics[high] }
-            text += String(repeating: "\u{10EEEE}", count: columns - named)
+        for row in 0..<min(rows, diacritics.count) where columns > 0 {
+            text += "\u{1b}[\(row + 1);1H\u{10EEEE}\(diacritics[row])\(diacritics[0])\(diacritics[high])"
+            text += String(repeating: "\u{10EEEE}", count: columns - 1)
         }
         return text
     }
