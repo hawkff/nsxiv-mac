@@ -419,7 +419,10 @@ final class TerminalUI: ViewerUI {
             // a frame that could not be drawn clears the screen, so no other image stays under this name
             if cols > 0, imageRows > 0 {
                 let drawn = drawCanvas().flatMap { kitty ? Self.png(of: $0).map { kittyFrame($0) } : drawnRows($0) }
-                if drawn == nil { shownImage = 0 }
+                if drawn == nil { // the next redraw, even of the bar alone, tries again
+                    shownImage = 0
+                    imageDirty = true
+                }
                 out += drawn ?? Array("\(kitty ? Self.deleteImages : "")\u{1b}[2J".utf8)
             } else if shownImage != 0 { // no row left for an image, as in a one-row terminal with the bar
                 out += Array(Self.deleteImages.utf8)
