@@ -141,18 +141,19 @@ picture() {
             }
         }' "$out" >"$pics/sent"
     read -r kind w h data <"$pics/sent" || fail "the viewer sent no image $1"
-    # with an alpha channel, opaque where the image came without one, which ImageMagick's .a
-    # would read as one of the colors
     if [ "$kind" != png ]; then
-        magick -size "${w}x$h" -depth 8 "$kind:$(echo "$data" | base64 -d)" -alpha set "$pics/image-$1.png"
+        magick -size "${w}x$h" -depth 8 "$kind:$(echo "$data" | base64 -d)" "$pics/image-$1.png"
     else
-        echo "$w" | base64 -d | magick png:- -alpha set "$pics/image-$1.png"
+        echo "$w" | base64 -d >"$pics/image-$1.png"
     fi
 }
-# pixel x,y of image $1 as r,g,b,a
+# pixel x,y of image $1 as r,g,b,a, from its hex, which names no alpha in an image without it,
+# where ImageMagick's fx would give one of the colors for the alpha
 pixel() {
-    magick "$pics/image-$1.png" -format \
-        "%[fx:round(255*p{$2}.r)],%[fx:round(255*p{$2}.g)],%[fx:round(255*p{$2}.b)],%[fx:round(255*p{$2}.a)]" info:
+    hex=$(magick "$pics/image-$1.png" -format "%[hex:p{$2}]" info:)
+    [ ${#hex} -eq 6 ] && hex=${hex}FF
+    printf '%d,%d,%d,%d' "0x$(echo "$hex" | cut -c1-2)" "0x$(echo "$hex" | cut -c3-4)" \
+        "0x$(echo "$hex" | cut -c5-6)" "0x$(echo "$hex" | cut -c7-8)"
 }
 size() { magick "$pics/image-$1.png" -format '%wx%h' info:; }
 # r,g,b,a as clear, red, lime, blue or white, within the few steps scaling may take off
