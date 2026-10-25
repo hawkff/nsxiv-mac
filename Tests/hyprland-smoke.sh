@@ -21,7 +21,7 @@ fail() { echo "$1" >&2; tail -60 "$log" >&2; exit 1; }
 cat >"$conf" <<'EOF'
 monitor = , preferred, auto, 1
 windowrule = match:class ^(nsxiv-mac)$, float on
-windowrule = match:class ^(nsxiv-mac)$, move 784 468
+windowrule = match:class ^(nsxiv-mac)$, move 500 400
 misc {
     disable_hyprland_logo = true
     disable_splash_rendering = true
@@ -54,6 +54,6 @@ echo "window (floating x y width height): $window"
 set -- $window
 [ $# -eq 5 ] || fail "hyprctl lists no viewer window"
 [ "$1" = true ] || fail "the window is not floating"
-[ "$4" -gt 240 ] || fail "the window did not grow for the large image"
+[ "$4" -gt 300 ] || fail "the window did not grow into the room it had"
 [ "$2" -ge 0 ] && [ "$3" -ge 0 ] && [ $(($2 + $4)) -le "$w" ] && [ $(($3 + $5)) -le "$h" ] ||
     fail "the grown window ran past the screen edge"
