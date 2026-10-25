@@ -239,13 +239,39 @@ struct RegressionChecks {
                "keys typed during the probe count, and the answers end only a C-x prefix: \(probed)")
         // herdr's answer, that of a terminal that cannot read the viewer's files, that of one
         // without kitty graphics, and an answer still on its way
-        let herdr = TerminalUI.kittyGraphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}_Gi=32;OK\u{1b}\\\u{1b}[?62;22c".utf8))
-        let remote = TerminalUI.kittyGraphics(
+        let herdr = TerminalUI.graphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}_Gi=32;OK\u{1b}\\\u{1b}[?62;22c".utf8))
+        let remote = TerminalUI.graphics(
             in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}_Gi=32;EBADF:Failed to read image file\u{1b}\\\u{1b}[?62;22c".utf8))
-        let none = TerminalUI.kittyGraphics(in: Array("\u{1b}[?1;2c".utf8))
-        assert(herdr! == (true, true) && remote! == (true, false) && none! == (false, false)
-               && TerminalUI.kittyGraphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62".utf8)) == nil,
-               "the probe tells kitty graphics, and frames in files, from their absence, once the device attributes came")
+        let none = TerminalUI.graphics(in: Array("\u{1b}[?1;2c".utf8))
+        // foot's attributes, and a VT132's, whose 4 is its class rather than sixels
+        let foot = TerminalUI.graphics(in: Array("\u{1b}[?62;4;22c".utf8))
+        let vt132 = TerminalUI.graphics(in: Array("\u{1b}[?4;2c".utf8))
+        assert(herdr! == (true, true, false) && remote! == (true, false, false) && none! == (false, false, false)
+               && foot! == (false, false, true) && vt132! == (false, false, false)
+               && TerminalUI.graphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62".utf8)) == nil,
+               "the probe tells kitty graphics, frames in files and sixels from their absence, once the device attributes came")
+        assert(TerminalUI.tmuxSupport("on|1|1|bpaste,clipboard,sixel,sync|xterm-kitty\n") == (true, true)
+               && TerminalUI.tmuxSupport("all|1|1|RGB|xterm-ghostty\n") == (true, false)
+               && TerminalUI.tmuxSupport("on|0|1|sixel|foot\n") == (false, true)
+               && TerminalUI.tmuxSupport("off|1||sixel|xterm-256color\n") == (false, false)
+               && TerminalUI.tmuxSupport("on|1|1|sixel|tmux-256color\n") == (false, false)
+               && TerminalUI.tmuxSupport("") == (false, false),
+               "tmux passes kitty graphics with allow-passthrough to a client with UTF-8, sixels where it and its client have them, and neither to another tmux")
+        assert(TerminalUI.passthrough("\u{1b}_Ga=q\u{1b}\\") == "\u{1b}Ptmux;\u{1b}\u{1b}_Ga=q\u{1b}\u{1b}\\\u{1b}\\",
+               "a command for the terminal around tmux goes in tmux's passthrough, its escapes doubled")
+        // two rows of three cells of an image whose id has the high byte 3: the first cell of each
+        // row names the row, column 0 and that byte, the diacritics for 0, 1 and 3 being U+0305,
+        // U+030D and U+0310, and the cells after it count on
+        assert(TerminalUI.placeholderCells(columns: 3, rows: 2, high: 3)
+               == "\u{1b}[1;1H\u{10EEEE}\u{305}\u{305}\u{310}\u{10EEEE}\u{10EEEE}"
+               + "\u{1b}[2;1H\u{10EEEE}\u{30D}\u{305}\u{310}\u{10EEEE}\u{10EEEE}"
+               && TerminalUI.placeholderCells(columns: 0, rows: 2, high: 3).isEmpty,
+               "placeholders name their rows and the id's high byte in diacritics on the first cell of each row")
+        // chafa's sixel image of two bands of 6 rows, padded with a third, cut back to its canvas
+        let padded = Array("\u{1b}P0;1;0q\"1;1;4;18#0;2;100;0;0#0!4~-#0!4~-#0!4~\u{1b}\\".utf8)
+        assert(TerminalUI.sixelImage(padded, height: 12) == Array("\u{1b}P0;1;0q\"1;1;4;12#0;2;100;0;0#0!4~-#0!4~\u{1b}\\".utf8)
+               && TerminalUI.sixelImage(padded, height: 18) == padded,
+               "a sixel image chafa padded is cut to its canvas, and its raster attributes with it")
         let answers = Array("\u{1b}_Gi=77,p=1;ENOENT:No such image\u{1b}\\\u{1b}_Gi=78;OK\u{1b}\\".utf8)
         assert(TerminalUI.missingImages(in: answers) == [77], "a placement the terminal could not make names its image")
         let png = Data((0..<5000).map { UInt8($0 & 0xff) })
