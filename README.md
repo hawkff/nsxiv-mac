@@ -72,9 +72,12 @@ on the last line. A terminal with the kitty graphics protocol, such as kitty,
 Ghostty, or WezTerm, shows the image at full resolution, also over SSH and in a
 herdr pane. Such a terminal keeps the last frames, and the viewer sends the next
 image ahead while it waits for a key, so moving between images takes under a
-millisecond. Other terminals, tmux among them, get colored text symbols from
-[chafa](https://hpjansson.org/chafa/); install it for those (`apt install
-chafa`, `pacman -S chafa`). The keys stay the same, and `C-c` quits too. `C-m`
+millisecond. In tmux, these images need `set -g allow-passthrough on`; tmux 3.6
+and later also shows sixels where the terminal around it can. A terminal with
+sixels, such as foot, xterm, or Konsole, gets the image at full resolution from
+[chafa](https://hpjansson.org/chafa/) 1.14 or later, and other terminals get
+colored text symbols from it; install chafa for those (`apt install chafa`,
+`pacman -S chafa`). The keys stay the same, and `C-c` quits too. `C-m`
 arrives as `Return` and `C-[` as `Escape`, because terminals send the same
 bytes for them.
 
