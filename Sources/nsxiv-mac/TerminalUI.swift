@@ -396,7 +396,7 @@ final class TerminalUI: ViewerUI {
     private var imageRows: Int { max(0, rows - (viewer.barVisible ? 1 : 0)) }
 
     // A frame costs a chafa run or a whole image, so one in which only the status bar changed, as
-    // after a mark, rewrites just the bar, as cbzr keeps a page's image when its chrome changes.
+    // after a mark, rewrites just the bar.
     // shortcut: thumbnails that come in one at a time redraw the grid at most every 0.3 s
     private func setNeedsRedraw(image: Bool, after delay: Double = 0.01) {
         if image { imageDirty = true }
@@ -455,9 +455,9 @@ final class TerminalUI: ViewerUI {
         return canvas
     }
 
-    // The canvas as a PNG, written the way cbzr writes its pages: 8-bit RGB, each row with the Up
-    // filter, zlib at its fastest level. libpng, which Imlib2 saves with, tries all five filters on
-    // every row; for a 2560x1638 frame that took 306 ms against 116 ms here, for 3% less data.
+    // The canvas as a PNG: 8-bit RGB, each row with the Up filter, zlib at its fastest level.
+    // libpng, which Imlib2 saves with, tries all five filters on every row; for a 2560x1638 frame
+    // that took 306 ms against 116 ms here, for 3% less data.
     // shortcut: such a frame still takes about 0.25 s to draw and encode and 2.4 MB to send; draw
     // fewer pixels where the image is upscaled anyway, if larger terminals feel slow
     static func png(of image: Imlib_Image) -> Data? {
