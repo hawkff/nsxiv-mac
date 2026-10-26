@@ -341,8 +341,11 @@ else
     picture "$zoomed"
     [ "$(size "$zoomed") $(hue "$(pixel "$zoomed" 266,154)") $(hue "$(pixel "$zoomed" 5,5)")" = "533x309 blue clear" ] ||
         fail "the zoomed view went as $(size "$zoomed") $(pixel "$zoomed" 266,154) $(pixel "$zoomed" 5,5), not as 533x309 pixels with blue amid clear ones"
+    whole=$(printf '\033[8;7H\033_Ga=p,i=%s,p=1,' "$blue")
+    placements=$(grep -a -o -F "$whole" "$out" | wc -l)
     printf w >&3
-    drawn -E "$(printf '\033')\[8;7H$(printf '\033')_Ga=p,i=$blue,p=1,.*$(printf '\033')\[8;7H$(printf '\033')_Ga=p,i=$blue,p=1," "w did not show the blue image whole again"
+    for _ in $(seq 100); do [ "$(grep -a -o -F "$whole" "$out" | wc -l)" -gt "$placements" ] && break; sleep 0.1; done
+    [ "$(grep -a -o -F "$whole" "$out" | wc -l)" -gt "$placements" ] || fail "w did not show the blue image whole again"
 fi
 before="$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)"
 printf m >&3
