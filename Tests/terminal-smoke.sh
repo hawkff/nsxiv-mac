@@ -328,6 +328,14 @@ bar '*1 |' "m did not mark the image"
 kill -TERM "$(cat "$pics/pid")"
 wait "$session" || fail "SIGTERM did not end the viewer cleanly"
 if grep -a -q 'the terminal mode changed' "$out"; then fail "the viewer left the terminal in another mode"; fi
+case $mode in kitty-files | herdr)
+    # the helper that made frames ahead ended with the viewer, and the frames' directory went;
+    # [d] keeps grep from finding its own command line
+    for p in /proc/[0-9]*; do
+        if tr '\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q -e '--frame-ahea[d]'; then fail "the helper outlived the viewer"; fi
+    done
+    if ls -d /tmp/tty-graphics-protocol-nsxiv-* >/dev/null 2>&1; then fail "the viewer left its frames' directory in /tmp"; fi
+esac
 if [ "$mode" = tmux ]; then
     [ "$(cat "$pics/status" 2>/dev/null)" = "0 same" ] ||
         fail "the viewer in tmux ended as '$(cat "$pics/status" 2>/dev/null)', not with status 0 and its pane's mode as it was"

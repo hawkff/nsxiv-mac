@@ -203,7 +203,18 @@ final class TerminalUI: ViewerUI {
     // -o and Q print to the terminal once it is back, without the frames it kept
     func willQuit() {
         Self.writeAll(tty, imagesLeft())
+        stopHelper()
         Self.restoreTerminal()
+    }
+
+    // the helper ended before the directory it writes frames in goes, where a frame it was still
+    // writing would stay
+    private func stopHelper() {
+        guard let process = helper?.process, process.isRunning else { return }
+        let ended = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in ended.signal() }
+        process.terminate()
+        _ = ended.wait(timeout: .now() + 0.5)
     }
 
     // the handler gets the terminal as the viewer found it, for its prompts and its output
