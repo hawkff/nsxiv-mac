@@ -372,8 +372,8 @@ final class TerminalUI: ViewerUI {
     // the terminal, decoded to RGBA. A canvas the image does not cover goes with its alpha, so the
     // terminal's background shows around the image. It also shows at the top left, scaled to the
     // image rows, as placement 1.
-    private func transmit(_ canvas: Imlib_Image, id: UInt32, opaque: Bool) -> (command: [UInt8], bytes: Int)? {
-        let keys = "a=T,\(placement(id))"
+    private func transmit(_ canvas: Imlib_Image, id: UInt32, opaque: Bool, crop: Crop?) -> (command: [UInt8], bytes: Int)? {
+        let keys = "a=T,\(placement(id, crop))"
         imlib_context_set_image(canvas)
         let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
         if let imageFiles, let path = Self.pixelFile(of: canvas, at: "\(imageFiles)/\(id)", alpha: !opaque) {
@@ -414,8 +414,51 @@ final class TerminalUI: ViewerUI {
 
     // Placement 1 of image id over the image rows: at the top left, or in tmux a virtual one, which
     // the placeholders show
-    private func placement(_ id: UInt32) -> String {
-        Self.tmux ? "U=1,i=\(id),p=1,c=\(cols),r=\(placedRows)" : "i=\(id),p=1,C=1,c=\(cols),r=\(imageRows)"
+    private func placement(_ id: UInt32, _ crop: Crop? = nil) -> String {
+        if Self.tmux { return "U=1,i=\(id),p=1,c=\(cols),r=\(placedRows)" }
+        guard let crop else { return "i=\(id),p=1,C=1,c=\(cols),r=\(imageRows)" }
+        return "i=\(id),p=1,C=1,c=\(crop.columns),r=\(crop.rows),X=\(crop.x),Y=\(crop.y)"
+    }
+
+    // where a placement goes: the top left, where the frame starts, or a cropped image's first cell
+    private static func cursor(_ crop: Crop?) -> [UInt8] {
+        crop.map { Array("\u{1b}[\($0.row + 1);\($0.column + 1)H".utf8) } ?? []
+    }
+
+    // An image the view shows whole, with room around it, goes as a frame of its own, without the
+    // transparent rest of the view: fewer bytes for the terminal, and for herdr to send on to its
+    // client, and opaque ones, which need no alpha. Its box spans whole cells, its right and bottom
+    // edges on cell boundaries and the left and top ones offset within their cell, so the terminal,
+    // and a herdr client after it, shows it at its size; the box sits within a cell of where the
+    // view has the image.
+    struct Crop: Codable, Equatable {
+        let column: Int, row: Int, columns: Int, rows: Int // the box, in cells
+        let x: Int, y: Int // the image's offset in the box's first cell, in pixels
+        let width: Int, height: Int // the frame's pixels
+    }
+
+    // the crop for view, nil when the image fills it or runs past it
+    static func crop(_ view: Viewport, canvas: CGSize, cell: (width: Double, height: Double), scale: Double,
+                     columns: Int, rows: Int) -> Crop? {
+        let image = view.imageRect, pixel = cell.height / 16 // the terminal's pixels in a unit of the view
+        let cellWidth = Int(cell.width), cellHeight = Int(cell.height)
+        guard cellWidth > 0, cellHeight > 0, image.minX >= -0.01, image.minY >= -0.01,
+              image.maxX <= canvas.width + 0.01, image.maxY <= canvas.height + 0.01 else { return nil }
+        let width = Int((image.width * pixel).rounded()), height = Int((image.height * pixel).rounded())
+        guard width > 0, height > 0, width < columns * cellWidth || height < rows * cellHeight else { return nil }
+        let boxColumns = (width + cellWidth - 1) / cellWidth, boxRows = (height + cellHeight - 1) / cellHeight
+        guard boxColumns <= columns, boxRows <= rows else { return nil }
+        let x = boxColumns * cellWidth - width, y = boxRows * cellHeight - height
+        let left = image.minX * pixel, top = (canvas.height - image.maxY) * pixel
+        let column = min(max(0, Int(((left - Double(x)) / Double(cellWidth)).rounded())), columns - boxColumns)
+        let row = min(max(0, Int(((top - Double(y)) / Double(cellHeight)).rounded())), rows - boxRows)
+        return Crop(column: column, row: row, columns: boxColumns, rows: boxRows, x: x, y: y,
+                    width: max(1, Int((image.width * scale).rounded())), height: max(1, Int((image.height * scale).rounded())))
+    }
+
+    // the crop of the current view's frame; none through tmux, whose placeholders fill their box
+    private func crop(_ view: Viewport, scale: Double) -> Crop? {
+        Self.tmux ? nil : Self.crop(view, canvas: canvasSize, cell: cell, scale: scale, columns: cols, rows: imageRows)
     }
 
     // the rows a placeholder can name
@@ -471,16 +514,17 @@ final class TerminalUI: ViewerUI {
         // what other programs left, before the viewer sent any image of its own
         var show = Array((shownImage == 0 && kept.isEmpty ? Self.deleteImages : "").utf8)
         let id: UInt32
+        let crop = key == nil ? nil : crop(viewer.viewport, scale: framePixels(viewer.viewport, image: true).scale)
         if let key, let frame = kept[key] {
             id = frame.id
             keep(key, id: id, bytes: frame.bytes)
             // q=1 leaves an answer when the terminal dropped the image, so it goes again
-            show += Array(Self.command("a=p,\(placement(id)),q=1").utf8)
+            show += Self.cursor(crop) + Array(Self.command("a=p,\(placement(id, crop)),q=1").utf8)
         } else {
             id = newImageID()
-            guard let canvas = drawCanvas(), let sent = transmit(canvas.image, id: id, opaque: canvas.opaque)
+            guard let canvas = drawCanvas(crop: crop), let sent = transmit(canvas.image, id: id, opaque: canvas.opaque, crop: crop)
             else { return nil }
-            show += sent.command
+            show += Self.cursor(crop) + sent.command
             if let key { keep(key, id: id, bytes: sent.bytes) }
         }
         if Self.tmux { show += Array(placeholders(id).utf8) }
@@ -579,7 +623,9 @@ final class TerminalUI: ViewerUI {
         let view: Viewport // the viewer's, before the image's size goes in as loading it will
         let canvas: CGSize
         let gamma: Int, contrast: Int
-        let cellHeight: Double
+        let cellWidth: Double, cellHeight: Double
+        let columns: Int, rows: Int // the image rows
+        let crop: Bool // whether an image shown whole goes alone
         let file: String // where the frame goes: raw pixels for the terminal to read, or a PNG
         let raw: Bool
         let limit: Int // the bytes the frame may take in the terminal
@@ -589,7 +635,8 @@ final class TerminalUI: ViewerUI {
         var stamp: [Int]? = nil // the file's times, before it loaded
         var size: CGSize? = nil // nil for an animation, a broken file or a huge image, left out until the file changes
         var view: Viewport? = nil // the first view
-        var width = 0, height = 0, scale = 1.0
+        var width = 0, height = 0, scale = 1.0 // the view's frame
+        var sentWidth = 0, sentHeight = 0 // the frame written: the view's, or the image alone
         var opaque = true
         var bytes = 0 // what the terminal stores of it; 0 when it was not written, as past the limit
     }
@@ -606,12 +653,15 @@ final class TerminalUI: ViewerUI {
         let pixels = framePixels(view, image: true, kitty: true, sixel: false, cellHeight: job.cellHeight, canvas: job.canvas)
         (frame.size, frame.view) = (next.size, view)
         (frame.width, frame.height, frame.scale) = pixels
-        guard (job.raw ? 3 : 4) * pixels.width * pixels.height <= job.limit,
-              let image = canvas.sized(pixels.width, pixels.height) else { return frame }
-        frame.opaque = renderer.drawStill(next.image, view: view, gamma: job.gamma, contrast: job.contrast, into: image,
-                                          width: pixels.width, height: pixels.height, scale: pixels.scale)
+        let crop = job.crop ? Self.crop(view, canvas: job.canvas, cell: (job.cellWidth, job.cellHeight), scale: pixels.scale,
+                                        columns: job.columns, rows: job.rows) : nil
+        let width = crop?.width ?? pixels.width, height = crop?.height ?? pixels.height
+        (frame.sentWidth, frame.sentHeight) = (width, height)
+        guard (job.raw ? 3 : 4) * width * height <= job.limit, let image = canvas.sized(width, height) else { return frame }
+        frame.opaque = renderer.drawStill(next.image, view: crop == nil ? view : view.atOrigin, gamma: job.gamma,
+                                          contrast: job.contrast, into: image, width: width, height: height, scale: pixels.scale)
         // in a file, a frame with transparency takes 4 bytes a pixel, which must fit before it is written
-        let bytes = (job.raw && frame.opaque ? 3 : 4) * pixels.width * pixels.height
+        let bytes = (job.raw && frame.opaque ? 3 : 4) * width * height
         guard bytes <= job.limit else { return frame }
         if job.raw {
             guard pixelFile(of: image, at: job.file, alpha: !frame.opaque) != nil else { return frame }
@@ -660,7 +710,7 @@ final class TerminalUI: ViewerUI {
         let command: [UInt8]
         if job.raw {
             let file = Data(job.file.utf8).base64EncodedString()
-            command = Array(Self.command("\(keys),f=\(frame.opaque ? 24 : 32),s=\(frame.width),v=\(frame.height),t=t,q=2;\(file)").utf8)
+            command = Array(Self.command("\(keys),f=\(frame.opaque ? 24 : 32),s=\(frame.sentWidth),v=\(frame.sentHeight),t=t,q=2;\(file)").utf8)
         } else {
             guard let png = FileManager.default.contents(atPath: job.file) else { return }
             unlink(job.file)
@@ -795,7 +845,8 @@ final class TerminalUI: ViewerUI {
                 aheadFiles += 1
                 let file = imageFiles.map { "\($0)/ahead-\(aheadFiles)" } ?? frame + "-ahead.png"
                 let job = AheadJob(path: entry.path, view: viewer.viewport, canvas: canvasSize, gamma: viewer.gamma,
-                                   contrast: viewer.contrast, cellHeight: cell.height, file: file, raw: imageFiles != nil,
+                                   contrast: viewer.contrast, cellWidth: cell.width, cellHeight: cell.height, columns: cols,
+                                   rows: imageRows, crop: !Self.tmux, file: file, raw: imageFiles != nil,
                                    limit: Self.keptBudget - reservedBytes(before: entry.path))
                 aheadBusy = true
                 runAhead(job, forgotten: framesForgotten)
@@ -1209,12 +1260,14 @@ final class TerminalUI: ViewerUI {
         return (max(1, Int((canvas.width * scale).rounded())), max(1, Int((canvas.height * scale).rounded())), scale)
     }
 
-    // the current view drawn into the canvas, and whether it came out opaque
-    private func drawCanvas() -> (image: Imlib_Image, opaque: Bool)? {
+    // the current view drawn into the canvas, or the image alone for a crop, and whether it came out opaque
+    private func drawCanvas(crop: Crop? = nil) -> (image: Imlib_Image, opaque: Bool)? {
         if !viewer.thumbnailMode { loadRenderer() }
         let pixels = framePixels(viewer.viewport, image: !viewer.thumbnailMode && viewer.image != nil)
-        guard let canvas = makeCanvas(pixels.width, pixels.height) else { return nil }
-        return (canvas, renderer.render(into: canvas, width: pixels.width, height: pixels.height, scale: pixels.scale))
+        let width = crop?.width ?? pixels.width, height = crop?.height ?? pixels.height
+        guard let canvas = makeCanvas(width, height) else { return nil }
+        let view = crop == nil ? nil : viewer.viewport.atOrigin
+        return (canvas, renderer.render(into: canvas, width: width, height: height, scale: pixels.scale, view: view))
     }
 
     // the view's canvas, made anew for another size

@@ -257,6 +257,22 @@ struct RegressionChecks {
                && TerminalUI.tmuxSupport("on|1|1|sixel|tmux-256color\n") == (false, false)
                && TerminalUI.tmuxSupport("") == (false, false),
                "tmux passes kitty graphics with allow-passthrough to a client with UTF-8, sixels where it and its client have them, and neither to another tmux")
+        // a 700x232 image shown whole at 100% in a view of 800x464 units, 100 columns by 29 rows of
+        // 10x20 pixels: 875x290 pixels, in a box of 88 columns by 15 rows from column 6 and row 7,
+        // its right and bottom edges on cell boundaries; an image that fills the view, or runs past
+        // it, goes with the view
+        var whole = Viewport()
+        whole.viewSize = CGSize(width: 800, height: 464)
+        whole.setImageSize(CGSize(width: 700, height: 232), resetView: true)
+        let cropped = TerminalUI.crop(whole, canvas: whole.viewSize, cell: (10, 20), scale: 1, columns: 100, rows: 29)
+        var filling = whole
+        filling.setImageSize(CGSize(width: 2000, height: 1160), resetView: true)
+        var past = whole
+        past.zoomStep(+1)
+        assert(cropped == TerminalUI.Crop(column: 6, row: 7, columns: 88, rows: 15, x: 5, y: 10, width: 700, height: 232)
+               && TerminalUI.crop(filling, canvas: whole.viewSize, cell: (10, 20), scale: 1, columns: 100, rows: 29) == nil
+               && TerminalUI.crop(past, canvas: whole.viewSize, cell: (10, 20), scale: 1, columns: 100, rows: 29) == nil,
+               "an image shown whole goes alone, in a box of whole cells: \(String(describing: cropped))")
         assert(TerminalUI.passthrough("\u{1b}_Ga=q\u{1b}\\") == "\u{1b}Ptmux;\u{1b}\u{1b}_Ga=q\u{1b}\u{1b}\\\u{1b}\\",
                "a command for the terminal around tmux goes in tmux's passthrough, its escapes doubled")
         // two rows of three cells of an image whose id has the high byte 3: the first cell of each

@@ -32,7 +32,7 @@ if [ "$mode" = kitty-budget ]; then
     winsize=100,400,4000,2000 start='-n 2'
 else
     magick -size 2000x1160 xc:red "$pics/1-red.png"
-    magick -size 400x232 xc:blue "$pics/2-blue.png"
+    magick -size 700x232 xc:blue "$pics/2-blue.png"
     winsize=30,100,1000,600 start=
 fi
 mkfifo "$keys"
@@ -252,6 +252,7 @@ elif [ "$mode" = tmux ]; then
     blue=$(last a=t)
     picture "$red"
     picture "$blue"
+    # through tmux, an image goes with its view, whose box the placeholders fill
     [ "$(size "$red") $(hue "$(pixel "$red" 500,290)") $(size "$blue") $(hue "$(pixel "$blue" 400,232)")" = "1000x580 red 800x464 blue" ] ||
         fail "the images went through tmux as $(size "$red") and $(size "$blue"), not as the red and blue frames"
     printf j >&3
@@ -301,11 +302,13 @@ else
         [ -d "$files" ] || fail "the probe named no directory for frames: $files"
     fi
     picture "$blue"
-    # around the image, the terminal's own background shows
-    [ "$(size "$blue") $(hue "$(pixel "$blue" 400,232)") $(hue "$(pixel "$blue" 5,5)")" = "800x464 blue clear" ] ||
-        fail "the blue image went as $(size "$blue") $(pixel "$blue" 400,232) $(pixel "$blue" 5,5), not as 800x464 pixels with blue amid clear ones"
+    # shown whole, the image goes alone, opaque, without the rest of the view
+    read -r kind _ <"$pics/sent"
+    [ "$(size "$blue") $(hue "$(pixel "$blue" 350,116)") $(hue "$(pixel "$blue" 5,5)") $kind" = "700x232 blue blue $medium" ] ||
+        fail "the blue image went as $kind, $(size "$blue") $(pixel "$blue" 350,116) $(pixel "$blue" 5,5), not alone as 700x232 blue pixels"
     printf j >&3
-    drawn -F "$(printf '\033_Ga=p,i=%s,' "$blue")" "j did not show the blue image sent ahead"
+    # in a box of 88 columns by 15 rows from row 8 and column 7, 875x290 pixels at offsets 5 and 10
+    drawn -F "$(printf '\033[8;7H\033_Ga=p,i=%s,p=1,C=1,c=88,r=15,X=5,Y=10,' "$blue")" "j did not place the blue image sent ahead in its box"
     drawn -F 2-blue.png "j did not name the second image"
     drawn -F "$(printf '\033_Ga=d,d=i,i=%s,p=1,' "$red")" "j did not take the red image off the screen, keeping it in the terminal"
     printf k >&3
@@ -318,8 +321,8 @@ else
     sends a=T 2 "the viewer did not send the image the terminal dropped again"
     blue=$(last a=T)
     picture "$blue"
-    [ "$(hue "$(pixel "$blue" 400,232)") $(hue "$(pixel "$blue" 5,5)")" = "blue clear" ] ||
-        fail "the viewer sent $(pixel "$blue" 400,232) amid $(pixel "$blue" 5,5) in place of the blue image amid clear pixels"
+    [ "$(size "$blue") $(hue "$(pixel "$blue" 350,116)") $(hue "$(pixel "$blue" 5,5)")" = "700x232 blue blue" ] ||
+        fail "the viewer sent $(size "$blue") $(pixel "$blue" 350,116) $(pixel "$blue" 5,5) in place of the blue image alone"
     [ "$(grep -a -o -F "$(printf '\033_Ga=d,d=A,')" "$out" | wc -l)" -eq 1 ] ||
         fail "the viewer deleted every image on the screen after the first frame, freeing those it kept"
     magick -size 2000x1160 xc:lime "$pics/1-red.png"
@@ -330,6 +333,16 @@ else
     [ "$(hue "$(pixel "$lime" 500,290)")" = lime ] || fail "k showed the first image as $(pixel "$lime" 500,290), not lime"
     printf j >&3
     drawn -F "$(printf '\033_Ga=p,i=%s,' "$blue")" "j did not show the blue image sent again"
+    # zoomed in, the image runs past the sides, with room above and below: the frame is the view,
+    # 533x309 pixels at the image's own scale, and the terminal's background shows around the image
+    printf + >&3
+    sends a=T 4 "+ did not send the zoomed view"
+    zoomed=$(last a=T)
+    picture "$zoomed"
+    [ "$(size "$zoomed") $(hue "$(pixel "$zoomed" 266,154)") $(hue "$(pixel "$zoomed" 5,5)")" = "533x309 blue clear" ] ||
+        fail "the zoomed view went as $(size "$zoomed") $(pixel "$zoomed" 266,154) $(pixel "$zoomed" 5,5), not as 533x309 pixels with blue amid clear ones"
+    printf w >&3
+    drawn -E "$(printf '\033')\[8;7H$(printf '\033')_Ga=p,i=$blue,p=1,.*$(printf '\033')\[8;7H$(printf '\033')_Ga=p,i=$blue,p=1," "w did not show the blue image whole again"
 fi
 before="$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)"
 printf m >&3

@@ -321,7 +321,7 @@ final class ImlibRenderer {
     // draws the whole window into canvas, which is width by height pixels
     // the view drawn into canvas, and whether every pixel came out opaque
     @discardableResult
-    func render(into canvas: Imlib_Image, width: Int, height: Int, scale: Double) -> Bool {
+    func render(into canvas: Imlib_Image, width: Int, height: Int, scale: Double, view: Viewport? = nil) -> Bool {
         imlib_context_set_image(canvas)
         imlib_image_set_has_alpha(0)
         imlib_context_set_color_modifier(nil)
@@ -335,7 +335,7 @@ final class ImlibRenderer {
         if viewer.thumbnailMode {
             renderGrid(canvas, scale: scale)
         } else {
-            covered = renderImage(canvas, width: width, height: mainH, scale: scale)
+            covered = renderImage(canvas, width: width, height: mainH, scale: scale, view: view ?? viewer.viewport)
         }
         if barH > 0 { renderBar(canvas, y: mainH, width: width, height: barH, scale: scale) }
         return covered || !clear
@@ -347,9 +347,8 @@ final class ImlibRenderer {
         imlib_image_fill_rectangle(Int32(x), Int32(y), Int32(max(0, w)), Int32(max(0, h)))
     }
 
-    private func renderImage(_ canvas: Imlib_Image, width: Int, height: Int, scale: Double) -> Bool {
-        drawImage(shown, view: viewer.viewport, errorText: viewer.errorText, into: canvas, width: width, height: height,
-                  scale: scale)
+    private func renderImage(_ canvas: Imlib_Image, width: Int, height: Int, scale: Double, view: Viewport) -> Bool {
+        drawImage(shown, view: view, errorText: viewer.errorText, into: canvas, width: width, height: height, scale: scale)
     }
 
     // A still image other than the current one, as it will show once it is: the terminal draws
