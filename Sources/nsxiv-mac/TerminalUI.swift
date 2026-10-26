@@ -27,7 +27,9 @@ final class TerminalUI: ViewerUI {
     private let sixel: Bool // chafa's sixels, where kitty graphics are missing
     private let imageFiles: String? // the directory of frames the terminal reads itself
     private let chafa: [String] // the command, without the size and the file
-    private let frame: String // the drawn view as a PNG file, for chafa; with -ahead, the next image's
+    // the drawn view as a PNG file, for chafa, in a directory of the viewer's own, where -ahead is
+    // the next image's and -ahead.png a frame the helper made for the terminal
+    private let frame: String
     private var canvas = Canvas() // the view's
     private var aheadCanvas = Canvas() // for frames made ahead
     private var aheadBusy = false // a frame being made ahead
@@ -35,7 +37,7 @@ final class TerminalUI: ViewerUI {
     // the helper process that makes frames ahead, its jobs in the order it answers them, and the
     // part of an answer read so far
     private var helper: (process: Process, input: FileHandle, answers: DispatchSourceRead)?
-    private var helperJobs: [(job: AheadJob, forgotten: Int, reserved: Int)] = []
+    private var helperJobs: [(job: AheadJob, forgotten: Int)] = []
     private var helperAnswer: [UInt8] = []
     private var helperFailed = false
     private var cols = 80
@@ -81,7 +83,7 @@ final class TerminalUI: ViewerUI {
     private var placedAhead = false // hidden placements under the bar, which hiding the bar would show
 
     // what atexit puts back
-    private static var saved: (tty: Int32, mode: termios, frame: String, kitty: Bool, imageFiles: String?)?
+    private static var saved: (tty: Int32, mode: termios, work: String, kitty: Bool, imageFiles: String?)?
     private static var tmux = false // kitty graphics through tmux, to the terminal around it
 
     // nil without a terminal, and without chafa in a terminal that cannot show images, which
@@ -94,14 +96,13 @@ final class TerminalUI: ViewerUI {
             close(tty)
             return nil
         }
+        // only the viewer reads and writes there, so no other user sees a frame or puts a file in its place
         var template = Array(((ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp") + "/nsxiv-XXXXXX").utf8CString)
-        let fd = mkstemp(&template)
-        guard fd >= 0 else {
+        guard let work = mkdtemp(&template).map({ String(cString: $0) }) else {
             close(tty)
             return nil
         }
-        close(fd)
-        let frame = template.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+        let frame = work + "/frame.png"
         // the terminal reads and deletes only files in a temporary directory, with this in the path
         var directory = Array("/tmp/tty-graphics-protocol-nsxiv-XXXXXX".utf8CString)
         let imageFiles = mkdtemp(&directory).map { String(cString: $0) }
@@ -115,7 +116,7 @@ final class TerminalUI: ViewerUI {
             source.resume()
             stops.append(source)
         }
-        Self.saved = (tty, mode, frame, false, imageFiles)
+        Self.saved = (tty, mode, work, false, imageFiles)
         atexit { TerminalUI.restoreTerminal() }
         Self.enter()
         // tmux takes a kitty query as a title, so in tmux the viewer asks it what it passes on, and
@@ -214,7 +215,11 @@ final class TerminalUI: ViewerUI {
         let ended = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in ended.signal() }
         process.terminate()
-        _ = ended.wait(timeout: .now() + 0.5)
+        // a helper that cannot take SIGTERM, as one stopped, ends with SIGKILL
+        if ended.wait(timeout: .now() + 0.5) == .timedOut {
+            kill(process.processIdentifier, SIGKILL)
+            _ = ended.wait(timeout: .now() + 0.5)
+        }
     }
 
     // the handler gets the terminal as the viewer found it, for its prompts and its output
@@ -264,9 +269,7 @@ final class TerminalUI: ViewerUI {
     private static func restoreTerminal() {
         guard let saved = Self.saved else { return }
         leave()
-        unlink(saved.frame)
-        unlink(saved.frame + "-ahead")
-        unlink(saved.frame + "-ahead.png")
+        try? FileManager.default.removeItem(atPath: saved.work)
         if let imageFiles = saved.imageFiles { try? FileManager.default.removeItem(atPath: imageFiles) }
         Self.saved = nil
     }
@@ -622,15 +625,23 @@ final class TerminalUI: ViewerUI {
 
     // a frame made ahead, sent to the terminal unless it went stale meanwhile, as with another
     // layout or a file that changed, or no longer fits
-    private func sendAhead(_ job: AheadJob, _ frame: AheadFrame, forgotten: Int, reserved: Int) {
+    private func sendAhead(_ job: AheadJob, _ frame: AheadFrame, forgotten: Int) {
         aheadBusy = false
+        // made for a layout or a file that changed meanwhile: dropped, and the frames go ahead anew
+        guard forgotten == framesForgotten else {
+            unlink(job.file)
+            schedulePrefetch()
+            return
+        }
         guard let view = frame.view, let size = frame.size else {
             notAhead.insert(job.path)
             schedulePrefetch()
             return
         }
-        guard frame.bytes > 0, forgotten == framesForgotten, reserved + frame.bytes <= Self.keptBudget else {
-            unlink(job.file) // the next frame tries again
+        // the frames it must fit beside may have grown meanwhile, as with antialiasing turned off;
+        // one that no longer fits waits for the next frame shown
+        guard frame.bytes > 0, reservedBytes(before: job.path) + frame.bytes <= Self.keptBudget else {
+            unlink(job.file)
             return
         }
         let key = key(path: job.path, frame: 0, rotation: 0, flipH: false, flipV: false, view: view,
@@ -658,14 +669,14 @@ final class TerminalUI: ViewerUI {
 
     // job made by the helper, on another core, with an Imlib2 of its own; made here, between keys,
     // when the helper cannot run
-    private func runAhead(_ job: AheadJob, forgotten: Int, reserved: Int) {
+    private func runAhead(_ job: AheadJob, forgotten: Int) {
         guard let helper = helper ?? startHelper(), var line = try? JSONEncoder().encode(job) else {
             let frame = Self.makeAhead(job, renderer: renderer, canvas: &aheadCanvas)
-            sendAhead(job, frame, forgotten: forgotten, reserved: reserved)
+            sendAhead(job, frame, forgotten: forgotten)
             return
         }
         line.append(0x0a)
-        helperJobs.append((job, forgotten, reserved))
+        helperJobs.append((job, forgotten))
         if (try? helper.input.write(contentsOf: line)) == nil { helperGone() }
     }
 
@@ -704,7 +715,7 @@ final class TerminalUI: ViewerUI {
             guard !helperJobs.isEmpty else { continue }
             let pending = helperJobs.removeFirst()
             let frame = (try? JSONDecoder().decode(AheadFrame.self, from: line)) ?? AheadFrame()
-            sendAhead(pending.job, frame, forgotten: pending.forgotten, reserved: pending.reserved)
+            sendAhead(pending.job, frame, forgotten: pending.forgotten)
         }
     }
 
@@ -717,6 +728,20 @@ final class TerminalUI: ViewerUI {
         helperJobs = []
         helperAnswer = []
         aheadBusy = false
+        schedulePrefetch() // on the main queue from now on
+    }
+
+    // what must stay in the terminal beside a frame of path: the shown frame, and those of the
+    // neighbors before path in the way the viewer is going, which one sent ahead must not push out,
+    // or the two would push each other out for as long as no key comes
+    private func reservedBytes(before path: String) -> Int {
+        var reserved = kept.values.first { $0.id == shownImage }?.bytes ?? 0
+        for index in [viewer.current + direction, viewer.current - direction] where viewer.files.indices.contains(index) {
+            let neighbor = viewer.files[index].path
+            if neighbor == path { break }
+            reserved += kept.first { $0.key.path == neighbor }?.value.bytes ?? 0
+        }
+        return reserved
     }
 
     // The helper's side: jobs come as JSON lines on stdin and frames go back the same way, until
@@ -754,15 +779,9 @@ final class TerminalUI: ViewerUI {
     private func prefetchNeighbor() {
         var ready = pollfd(fd: tty, events: Int16(POLLIN), revents: 0)
         guard !imageDirty, !chafaAhead, !aheadBusy, poll(&ready, 1, 0) == 0 else { return } // a key or a frame comes first
-        // the shown frame stays, and so does the neighbor before: one that would push it out waits,
-        // or the two would push each other out for as long as no key comes
-        var reserved = kept.values.first { $0.id == shownImage }?.bytes ?? 0
         for index in [viewer.current + direction, viewer.current - direction] where viewer.files.indices.contains(index) {
             let entry = viewer.files[index]
-            if let frame = kept.first(where: { $0.key.path == entry.path }) {
-                reserved += frame.value.bytes
-                continue
-            }
+            if kept.keys.contains(where: { $0.path == entry.path }) { continue }
             if chafaFrames.keys.contains(where: { $0.path == entry.path }) { continue }
             guard !notAhead.contains(entry.path) else { continue }
             if kitty {
@@ -770,9 +789,9 @@ final class TerminalUI: ViewerUI {
                 let file = imageFiles.map { "\($0)/ahead-\(aheadFiles)" } ?? frame + "-ahead.png"
                 let job = AheadJob(path: entry.path, view: viewer.viewport, canvas: canvasSize, gamma: viewer.gamma,
                                    contrast: viewer.contrast, cellHeight: cell.height, file: file, raw: imageFiles != nil,
-                                   limit: Self.keptBudget - reserved)
+                                   limit: Self.keptBudget - reservedBytes(before: entry.path))
                 aheadBusy = true
-                runAhead(job, forgotten: framesForgotten, reserved: reserved)
+                runAhead(job, forgotten: framesForgotten)
                 return
             }
             // sixels: peek decodes, so a neighbor it turned down waits for its file to change
@@ -1198,14 +1217,15 @@ final class TerminalUI: ViewerUI {
         private(set) var image: Imlib_Image?
         private(set) var width = 0, height = 0
 
+        // a canvas that could not be made, as with too little memory, is tried again next time
         mutating func sized(_ width: Int, _ height: Int) -> Imlib_Image? {
-            if self.width != width || self.height != height {
+            if image == nil || self.width != width || self.height != height {
                 if let image {
                     imlib_context_set_image(image)
                     imlib_free_image()
                 }
                 image = imlib_create_image(Int32(width), Int32(height))
-                (self.width, self.height) = (width, height)
+                (self.width, self.height) = image == nil ? (0, 0) : (width, height)
             }
             return image
         }
