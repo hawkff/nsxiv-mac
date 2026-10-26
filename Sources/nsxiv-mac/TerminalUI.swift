@@ -646,6 +646,13 @@ final class TerminalUI: ViewerUI {
         }
         let key = key(path: job.path, frame: 0, rotation: 0, flipH: false, flipV: false, view: view,
                       pixels: (frame.width, frame.height, frame.scale), gamma: job.gamma, contrast: job.contrast)
+        // the viewer drew the same frame meanwhile, as when it went to the image first; a second one
+        // would leave the first in the terminal, kept by no one
+        guard kept[key] == nil else {
+            unlink(job.file)
+            schedulePrefetch()
+            return
+        }
         let id = newImageID()
         // under the status bar's last cell, whose background hides it
         let hidden = placeAhead && !Self.tmux && viewer.barVisible && rows > imageRows
