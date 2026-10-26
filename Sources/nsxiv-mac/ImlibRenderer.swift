@@ -321,7 +321,8 @@ final class ImlibRenderer {
     // draws the whole window into canvas, which is width by height pixels
     // the view drawn into canvas, and whether every pixel came out opaque
     @discardableResult
-    func render(into canvas: Imlib_Image, width: Int, height: Int, scale: Double) -> Bool {
+    // whole: the image alone, all of it over the canvas, as the terminal sends an image shown whole
+    func render(into canvas: Imlib_Image, width: Int, height: Int, scale: Double, whole: Bool = false) -> Bool {
         imlib_context_set_image(canvas)
         imlib_image_set_has_alpha(0)
         imlib_context_set_color_modifier(nil)
@@ -335,7 +336,7 @@ final class ImlibRenderer {
         if viewer.thumbnailMode {
             renderGrid(canvas, scale: scale)
         } else {
-            covered = renderImage(canvas, width: width, height: mainH, scale: scale)
+            covered = renderImage(canvas, width: width, height: mainH, scale: scale, whole: whole)
         }
         if barH > 0 { renderBar(canvas, y: mainH, width: width, height: barH, scale: scale) }
         return covered || !clear
@@ -347,9 +348,9 @@ final class ImlibRenderer {
         imlib_image_fill_rectangle(Int32(x), Int32(y), Int32(max(0, w)), Int32(max(0, h)))
     }
 
-    private func renderImage(_ canvas: Imlib_Image, width: Int, height: Int, scale: Double) -> Bool {
+    private func renderImage(_ canvas: Imlib_Image, width: Int, height: Int, scale: Double, whole: Bool) -> Bool {
         drawImage(shown, view: viewer.viewport, errorText: viewer.errorText, into: canvas, width: width, height: height,
-                  scale: scale)
+                  scale: scale, whole: whole)
     }
 
     // A still image other than the current one, as it will show once it is: the terminal draws
@@ -377,20 +378,20 @@ final class ImlibRenderer {
     // another thread's or process's when the frame is made ahead
     @discardableResult
     func drawStill(_ image: Imlib_Image, view: Viewport, gamma: Int, contrast: Int, into canvas: Imlib_Image,
-                   width: Int, height: Int, scale: Double) -> Bool {
+                   width: Int, height: Int, scale: Double, whole: Bool = false) -> Bool {
         setColors(gamma: gamma, contrast: contrast)
         imlib_context_set_image(canvas)
         imlib_image_set_has_alpha(0)
         imlib_context_set_color_modifier(nil)
         imlib_context_set_operation(IMLIB_OP_COPY)
         if clearBackground { Self.clear(0, 0, Int32(width), Int32(height)) } else { fill(background, 0, 0, width, height) }
-        return drawImage(image, view: view, errorText: nil, into: canvas, width: width, height: height, scale: scale)
-            || !clearBackground
+        return drawImage(image, view: view, errorText: nil, into: canvas, width: width, height: height, scale: scale,
+                         whole: whole) || !clearBackground
     }
 
     // the image view, or what went wrong, and whether opaque pixels of the image cover the canvas
     private func drawImage(_ image: Imlib_Image?, view: Viewport, errorText: String?, into canvas: Imlib_Image,
-                           width: Int, height: Int, scale: Double) -> Bool {
+                           width: Int, height: Int, scale: Double, whole: Bool = false) -> Bool {
         guard let shown = image else {
             if let text = errorText, let face = loadFont(scale: scale) {
                 imlib_context_set_font(face)
@@ -405,12 +406,21 @@ final class ImlibRenderer {
         imlib_context_set_image(shown)
         let alpha = imlib_image_has_alpha() != 0
         let iw = CGFloat(imlib_image_get_width()), ih = CGFloat(imlib_image_get_height())
-        // only the source pixels that land in the window, in whole pixels so zoom stays steady
-        let sx0 = max(0, (-dx / z).rounded(.down)), sy0 = max(0, (-dy / z).rounded(.down))
-        let sx1 = min(iw, ((w - dx) / z).rounded(.up)), sy1 = min(ih, ((h - dy) / z).rounded(.up))
-        guard sx1 > sx0, sy1 > sy0 else { return false }
-        let x = Int32((dx + sx0 * z).rounded()), y = Int32((dy + sy0 * z).rounded())
-        let dw = Int32(max(1, ((sx1 - sx0) * z).rounded())), dh = Int32(max(1, ((sy1 - sy0) * z).rounded()))
+        // only the source pixels that land in the window, in whole pixels so zoom stays steady; for an
+        // image drawn whole, all of them over the canvas, whose size the caller rounded already
+        var sx0: CGFloat = 0, sy0: CGFloat = 0, sx1 = iw, sy1 = ih
+        var x: Int32 = 0, y: Int32 = 0, dw = Int32(width), dh = Int32(height)
+        if !whole {
+            sx0 = max(0, (-dx / z).rounded(.down))
+            sy0 = max(0, (-dy / z).rounded(.down))
+            sx1 = min(iw, ((w - dx) / z).rounded(.up))
+            sy1 = min(ih, ((h - dy) / z).rounded(.up))
+            guard sx1 > sx0, sy1 > sy0 else { return false }
+            x = Int32((dx + sx0 * z).rounded())
+            y = Int32((dy + sy0 * z).rounded())
+            dw = Int32(max(1, ((sx1 - sx0) * z).rounded()))
+            dh = Int32(max(1, ((sy1 - sy0) * z).rounded()))
+        }
         imlib_context_set_image(canvas)
         if alpha, view.alphaLayer {
             checkerboard(x: Int(x), y: Int(y), w: Int(dw), h: Int(dh), limit: (width, height), cell: Int(12 * s))

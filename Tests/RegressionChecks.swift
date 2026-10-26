@@ -257,6 +257,22 @@ struct RegressionChecks {
                && TerminalUI.tmuxSupport("on|1|1|sixel|tmux-256color\n") == (false, false)
                && TerminalUI.tmuxSupport("") == (false, false),
                "tmux passes kitty graphics with allow-passthrough to a client with UTF-8, sixels where it and its client have them, and neither to another tmux")
+        // a 700x232 image shown whole at 100% in a view of 800x464 units, 100 columns by 29 rows of
+        // 10x20 pixels: 875x290 pixels, in a box of 88 columns by 15 rows from column 6 and row 7,
+        // its right and bottom edges on cell boundaries; an image that fills the view, or runs past
+        // it, goes with the view
+        var whole = Viewport()
+        whole.viewSize = CGSize(width: 800, height: 464)
+        whole.setImageSize(CGSize(width: 700, height: 232), resetView: true)
+        let cropped = TerminalUI.crop(whole, canvas: whole.viewSize, cell: (10, 20), scale: 1, columns: 100, rows: 29)
+        var filling = whole
+        filling.setImageSize(CGSize(width: 2000, height: 1160), resetView: true)
+        var past = whole
+        past.zoomStep(+1)
+        assert(cropped == TerminalUI.Crop(column: 6, row: 7, columns: 88, rows: 15, x: 5, y: 10, width: 700, height: 232)
+               && TerminalUI.crop(filling, canvas: whole.viewSize, cell: (10, 20), scale: 1, columns: 100, rows: 29) == nil
+               && TerminalUI.crop(past, canvas: whole.viewSize, cell: (10, 20), scale: 1, columns: 100, rows: 29) == nil,
+               "an image shown whole goes alone, in a box of whole cells: \(String(describing: cropped))")
         assert(TerminalUI.passthrough("\u{1b}_Ga=q\u{1b}\\") == "\u{1b}Ptmux;\u{1b}\u{1b}_Ga=q\u{1b}\u{1b}\\\u{1b}\\",
                "a command for the terminal around tmux goes in tmux's passthrough, its escapes doubled")
         // two rows of three cells of an image whose id has the high byte 3: the first cell of each
@@ -345,6 +361,35 @@ struct RegressionChecks {
         let clearDecoded = imlib_image_get_data_for_reading_only()!
         assert(imlib_image_has_alpha() != 0 && (0..<6).map { clearDecoded[$0] } == clearColors,
                "a PNG frame with alpha keeps its pixels and their alpha: \((0..<6).map { String(clearDecoded[$0], radix: 16) })")
+        imlib_free_image()
+
+        // An image drawn whole, alone in its frame, keeps its edges though its size there rounds apart
+        // from where the view has it: 1600x236 at 50% in a view of 800x464 units is 1000x147.5
+        // terminal pixels, a frame of 1000x148, whose first row is the red top and last the blue bottom
+        let wholeRenderer = ImlibRenderer(viewer: Viewer(options: Options(), files: []))
+        wholeRenderer.clearBackground = true
+        guard let edged = imlib_create_image(1600, 236), let wholeFrame = imlib_create_image(1000, 148) else {
+            fatalError("no image")
+        }
+        imlib_context_set_image(edged)
+        imlib_image_set_has_alpha(0)
+        let edgedPixels = imlib_image_get_data()!
+        for row in 0..<236 {
+            for column in 0..<1600 { edgedPixels[row * 1600 + column] = row == 0 ? 0xffff_0000 : row == 235 ? 0xff00_00ff : 0xff00_ff00 }
+        }
+        imlib_image_put_back_data(edgedPixels)
+        var half = Viewport()
+        half.viewSize = CGSize(width: 800, height: 464)
+        half.setImageSize(CGSize(width: 1600, height: 236), resetView: true)
+        let wholeOpaque = wholeRenderer.drawStill(edged, view: half, gamma: 0, contrast: 0, into: wholeFrame, width: 1000,
+                                             height: 148, scale: 1.25, whole: true)
+        imlib_context_set_image(wholeFrame)
+        let wholePixels = imlib_image_get_data_for_reading_only()!
+        let top = wholePixels[500], bottom = wholePixels[147 * 1000 + 500]
+        assert(wholeOpaque && top >> 24 == 0xff && bottom >> 24 == 0xff && (top >> 16) & 0xff > 0 && bottom & 0xff > 0,
+               "an image drawn whole keeps its first and last rows: \(String(top, radix: 16)) \(String(bottom, radix: 16))")
+        imlib_free_image()
+        imlib_context_set_image(edged)
         imlib_free_image()
 
         // A revisit takes the decoded image from Imlib2's cache while the file's time stays, which an
