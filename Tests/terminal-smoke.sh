@@ -337,7 +337,7 @@ bar '*1 |' "m did not mark the image"
 # the mark, on the last image, changed only the status bar, which goes without the image
 [ "$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)" = "$before" ] ||
     fail "the mark sent or placed an image again: transmissions, images sent ahead, placements and sixels went from $before to $(sent a=T) $(sent a=t) $(sent a=p) $(sixels)"
-# a stopped helper cannot take SIGTERM
+# the viewer ends even with its helper stopped
 if [ "$mode" = kitty-files ]; then kill -STOP "$helper"; fi
 kill -TERM "$(cat "$pics/pid")"
 wait "$session" || fail "SIGTERM did not end the viewer cleanly"
