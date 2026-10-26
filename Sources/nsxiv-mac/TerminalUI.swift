@@ -819,10 +819,10 @@ final class TerminalUI: ViewerUI {
     }
 
     // While no key comes, the next image, then the previous one, goes to the terminal in its
-    // first view, each in a turn of the main queue of its own, unless a key is waiting by then;
-    // for sixels, chafa makes its frame in the background.
-    // shortcut: Imlib2 decodes on the main queue, so a key that comes during a prefetch waits
-    // for it, and images over 25 megapixels are left out; a second process would decode alongside
+    // first view, one at a time, made by the helper; for sixels, chafa makes the frame in the
+    // background.
+    // shortcut: a sixel frame decodes on the main queue, so a key that comes meanwhile waits for
+    // it, and images over 25 megapixels are left out; the helper would decode them alongside
     private func schedulePrefetch() {
         prefetch?.cancel()
         guard kitty || sixel, hasImageArea, !viewer.thumbnailMode else { return }
