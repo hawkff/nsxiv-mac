@@ -132,15 +132,15 @@ final class ImlibRenderer {
                 }
             }
         }
-        setColors()
+        setColors(gamma: viewer.gamma, contrast: viewer.contrast)
     }
 
-    // the viewer's gamma and contrast, for what draws next
-    private func setColors() {
+    // gamma and contrast in the viewer's steps, for what draws next
+    private func setColors(gamma: Int, contrast: Int) {
         imlib_context_set_color_modifier(colorModifier)
         imlib_reset_color_modifier()
-        if viewer.gamma != 0 { imlib_modify_color_modifier_gamma(viewer.gammaValue) }
-        if viewer.contrast != 0 { imlib_modify_color_modifier_contrast(viewer.contrastValue) }
+        if gamma != 0 { imlib_modify_color_modifier_gamma(Viewer.colorValue(gamma, max: Config.gammaMax)) }
+        if contrast != 0 { imlib_modify_color_modifier_contrast(Viewer.colorValue(contrast, max: Config.contrastMax)) }
     }
 
     private func freeImage(decache: Bool) {
@@ -373,12 +373,12 @@ final class ImlibRenderer {
         imlib_free_image()
     }
 
-    // the image view of image, unturned, with the current gamma and contrast, which a change made
-    // while the terminal showed a frame it kept never gave this renderer
+    // the image view of image, unturned, with gamma and contrast as given, the viewer's being
+    // another thread's or process's when the frame is made ahead
     @discardableResult
-    func drawStill(_ image: Imlib_Image, view: Viewport, into canvas: Imlib_Image, width: Int, height: Int,
-                   scale: Double) -> Bool {
-        setColors()
+    func drawStill(_ image: Imlib_Image, view: Viewport, gamma: Int, contrast: Int, into canvas: Imlib_Image,
+                   width: Int, height: Int, scale: Double) -> Bool {
+        setColors(gamma: gamma, contrast: contrast)
         imlib_context_set_image(canvas)
         imlib_image_set_has_alpha(0)
         imlib_context_set_color_modifier(nil)

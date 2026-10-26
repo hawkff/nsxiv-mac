@@ -288,6 +288,18 @@ else
         fail "the red image went as $(size "$red") $(pixel "$red" 500,290) $(pixel "$red" 995,575), not filling 1000x580 pixels with red"
     drawn -F "$(printf '\033_Ga=t,')" "the viewer did not send the next image ahead"
     blue=$(last a=t)
+    if [ "$mode" = kitty-files ]; then
+        # the viewer's helper, which made that frame, and the directory the frames go in, from the
+        # file the probe named
+        helper=
+        for p in /proc/[0-9]*; do
+            [ "$(sed 's/.*) //' "$p/stat" 2>/dev/null | cut -d' ' -f2)" = "$(cat "$pics/pid")" ] || continue
+            if tr '\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q -e '--frame-ahea[d]'; then helper=${p#/proc/}; fi
+        done
+        [ -n "$helper" ] || fail "no helper made the frame sent ahead"
+        files=$(dirname "$(grep -a -o "$(printf '\033')_Gi=32,[^;]*;[A-Za-z0-9+/=]*" "$out" | head -1 | sed 's/.*;//' | base64 -d)")
+        [ -d "$files" ] || fail "the probe named no directory for frames: $files"
+    fi
     picture "$blue"
     # around the image, the terminal's own background shows
     [ "$(size "$blue") $(hue "$(pixel "$blue" 400,232)") $(hue "$(pixel "$blue" 5,5)")" = "800x464 blue clear" ] ||
@@ -325,9 +337,17 @@ bar '*1 |' "m did not mark the image"
 # the mark, on the last image, changed only the status bar, which goes without the image
 [ "$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)" = "$before" ] ||
     fail "the mark sent or placed an image again: transmissions, images sent ahead, placements and sixels went from $before to $(sent a=T) $(sent a=t) $(sent a=p) $(sixels)"
+# the viewer ends even with its helper stopped
+if [ "$mode" = kitty-files ]; then kill -STOP "$helper"; fi
 kill -TERM "$(cat "$pics/pid")"
 wait "$session" || fail "SIGTERM did not end the viewer cleanly"
 if grep -a -q 'the terminal mode changed' "$out"; then fail "the viewer left the terminal in another mode"; fi
+if [ "$mode" = kitty-files ]; then
+    # the helper ended with the viewer, a zombie at most, which has no command line, and the
+    # frames' directory went; [d] keeps grep from finding its own command line
+    if tr '\0' ' ' <"/proc/$helper/cmdline" 2>/dev/null | grep -q -e '--frame-ahea[d]'; then fail "the helper outlived the viewer"; fi
+    [ ! -d "$files" ] || fail "the viewer left the directory of its frames, $files"
+fi
 if [ "$mode" = tmux ]; then
     [ "$(cat "$pics/status" 2>/dev/null)" = "0 same" ] ||
         fail "the viewer in tmux ended as '$(cat "$pics/status" 2>/dev/null)', not with status 0 and its pane's mode as it was"

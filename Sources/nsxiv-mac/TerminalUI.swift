@@ -27,9 +27,19 @@ final class TerminalUI: ViewerUI {
     private let sixel: Bool // chafa's sixels, where kitty graphics are missing
     private let imageFiles: String? // the directory of frames the terminal reads itself
     private let chafa: [String] // the command, without the size and the file
-    private let frame: String // the drawn view as a PNG file, for chafa; with -ahead, the next image's
-    private var canvas: Imlib_Image?
-    private var canvasPixels = (width: 0, height: 0)
+    // the drawn view as a PNG file, for chafa, in a directory of the viewer's own, where -ahead is
+    // the next image's and -ahead.png a frame the helper made for the terminal
+    private let frame: String
+    private var canvas = Canvas() // the view's
+    private var aheadCanvas = Canvas() // for frames made ahead
+    private var aheadBusy = false // a frame being made ahead
+    private var aheadFiles = 0 // names for the files of frames made ahead
+    // the helper process that makes frames ahead, its jobs in the order it answers them, and the
+    // part of an answer read so far
+    private var helper: (process: Process, input: FileHandle, answers: DispatchSourceRead)?
+    private var helperJobs: [(job: AheadJob, forgotten: Int)] = []
+    private var helperAnswer: [UInt8] = []
+    private var helperFailed = false
     private var cols = 80
     private var rows = 24
     private var cell = (width: 8.0, height: 16.0) // pixels, where the terminal says; else the usual 1:2 shape
@@ -59,6 +69,7 @@ final class TerminalUI: ViewerUI {
     // the files loaded or sent ahead: what loading them gave, and their times just before
     private var loaded: [String: (info: ImageInfo, stamp: [Int])] = [:]
     private var rendererPath: String? // the file the renderer holds; another loads once it must draw
+    private var rendererBehind = true // frame, turn or colors changed since the renderer took them
     private var redrawDue: DispatchTime?
     private var sources: [DispatchSourceProtocol] = []
     private var cutOff: [UInt8] = [] // an escape sequence the last read ended inside
@@ -72,7 +83,7 @@ final class TerminalUI: ViewerUI {
     private var placedAhead = false // hidden placements under the bar, which hiding the bar would show
 
     // what atexit puts back
-    private static var saved: (tty: Int32, mode: termios, frame: String, kitty: Bool, imageFiles: String?)?
+    private static var saved: (tty: Int32, mode: termios, work: String, kitty: Bool, imageFiles: String?)?
     private static var tmux = false // kitty graphics through tmux, to the terminal around it
 
     // nil without a terminal, and without chafa in a terminal that cannot show images, which
@@ -85,14 +96,13 @@ final class TerminalUI: ViewerUI {
             close(tty)
             return nil
         }
+        // only the viewer reads and writes there, so no other user sees a frame or puts a file in its place
         var template = Array(((ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp") + "/nsxiv-XXXXXX").utf8CString)
-        let fd = mkstemp(&template)
-        guard fd >= 0 else {
+        guard let work = mkdtemp(&template).map({ String(cString: $0) }) else {
             close(tty)
             return nil
         }
-        close(fd)
-        let frame = template.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
+        let frame = work + "/frame.png"
         // the terminal reads and deletes only files in a temporary directory, with this in the path
         var directory = Array("/tmp/tty-graphics-protocol-nsxiv-XXXXXX".utf8CString)
         let imageFiles = mkdtemp(&directory).map { String(cString: $0) }
@@ -106,7 +116,7 @@ final class TerminalUI: ViewerUI {
             source.resume()
             stops.append(source)
         }
-        Self.saved = (tty, mode, frame, false, imageFiles)
+        Self.saved = (tty, mode, work, false, imageFiles)
         atexit { TerminalUI.restoreTerminal() }
         Self.enter()
         // tmux takes a kitty query as a title, so in tmux the viewer asks it what it passes on, and
@@ -194,7 +204,22 @@ final class TerminalUI: ViewerUI {
     // -o and Q print to the terminal once it is back, without the frames it kept
     func willQuit() {
         Self.writeAll(tty, imagesLeft())
+        stopHelper()
         Self.restoreTerminal()
+    }
+
+    // the helper ended before the directory it writes frames in goes, where a frame it was still
+    // writing would stay
+    private func stopHelper() {
+        guard let process = helper?.process, process.isRunning else { return }
+        let ended = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in ended.signal() }
+        process.terminate()
+        // a helper that cannot take SIGTERM, as one stopped, ends with SIGKILL
+        if ended.wait(timeout: .now() + 0.5) == .timedOut {
+            kill(process.processIdentifier, SIGKILL)
+            _ = ended.wait(timeout: .now() + 0.5)
+        }
     }
 
     // the handler gets the terminal as the viewer found it, for its prompts and its output
@@ -244,8 +269,7 @@ final class TerminalUI: ViewerUI {
     private static func restoreTerminal() {
         guard let saved = Self.saved else { return }
         leave()
-        unlink(saved.frame)
-        unlink(saved.frame + "-ahead")
+        try? FileManager.default.removeItem(atPath: saved.work)
         if let imageFiles = saved.imageFiles { try? FileManager.default.removeItem(atPath: imageFiles) }
         Self.saved = nil
     }
@@ -346,12 +370,10 @@ final class TerminalUI: ViewerUI {
     // The canvas sent to the terminal as image id, with the bytes the terminal stores for it: raw
     // pixels in a file the terminal reads and deletes itself, kept as they came, or PNG through
     // the terminal, decoded to RGBA. A canvas the image does not cover goes with its alpha, so the
-    // terminal's background shows around the image. With place, it also shows at the top left,
-    // scaled to the image rows, as placement 1.
-    private func transmit(_ canvas: Imlib_Image, id: UInt32, place: Bool, opaque: Bool,
-                          hidden: Bool = false) -> (command: [UInt8], bytes: Int)? {
-        // hidden: placement 2, one cell at the cursor below cell backgrounds
-        let keys = place ? "a=T,\(placement(id))" : hidden ? "a=T,i=\(id),p=2,c=1,r=1,z=-1073741825,C=1" : "a=t,i=\(id)"
+    // terminal's background shows around the image. It also shows at the top left, scaled to the
+    // image rows, as placement 1.
+    private func transmit(_ canvas: Imlib_Image, id: UInt32, opaque: Bool) -> (command: [UInt8], bytes: Int)? {
+        let keys = "a=T,\(placement(id))"
         imlib_context_set_image(canvas)
         let width = Int(imlib_image_get_width()), height = Int(imlib_image_get_height())
         if let imageFiles, let path = Self.pixelFile(of: canvas, at: "\(imageFiles)/\(id)", alpha: !opaque) {
@@ -456,7 +478,7 @@ final class TerminalUI: ViewerUI {
             show += Array(Self.command("a=p,\(placement(id)),q=1").utf8)
         } else {
             id = newImageID()
-            guard let canvas = drawCanvas(), let sent = transmit(canvas.image, id: id, place: true, opaque: canvas.opaque)
+            guard let canvas = drawCanvas(), let sent = transmit(canvas.image, id: id, opaque: canvas.opaque)
             else { return nil }
             show += sent.command
             if let key { keep(key, id: id, bytes: sent.bytes) }
@@ -544,10 +566,206 @@ final class TerminalUI: ViewerUI {
     }
 
     private func key(path: String, frame: Int, rotation: Int, flipH: Bool, flipV: Bool, view: Viewport,
-                     pixels: (width: Int, height: Int, scale: Double)) -> FrameKey {
-        FrameKey(path: path, frame: frame, rotation: rotation, flipH: flipH, flipV: flipV, gamma: viewer.gamma,
-                 contrast: viewer.contrast, x: view.imageRect.minX, y: view.imageRect.minY, zoom: view.zoom,
+                     pixels: (width: Int, height: Int, scale: Double), gamma: Int? = nil, contrast: Int? = nil) -> FrameKey {
+        FrameKey(path: path, frame: frame, rotation: rotation, flipH: flipH, flipV: flipV, gamma: gamma ?? viewer.gamma,
+                 contrast: contrast ?? viewer.contrast, x: view.imageRect.minX, y: view.imageRect.minY, zoom: view.zoom,
                  antialias: view.antialias, alphaLayer: view.alphaLayer, width: pixels.width, height: pixels.height)
+    }
+
+    // A still's first view, made ahead: what decides it and where it goes. It reads nothing of the
+    // viewer's, so another thread or process can make it.
+    struct AheadJob: Codable {
+        let path: String
+        let view: Viewport // the viewer's, before the image's size goes in as loading it will
+        let canvas: CGSize
+        let gamma: Int, contrast: Int
+        let cellHeight: Double
+        let file: String // where the frame goes: raw pixels for the terminal to read, or a PNG
+        let raw: Bool
+        let limit: Int // the bytes the frame may take in the terminal
+    }
+
+    struct AheadFrame: Codable {
+        var stamp: [Int]? = nil // the file's times, before it loaded
+        var size: CGSize? = nil // nil for an animation, a broken file or a huge image, left out until the file changes
+        var view: Viewport? = nil // the first view
+        var width = 0, height = 0, scale = 1.0
+        var opaque = true
+        var bytes = 0 // what the terminal stores of it; 0 when it was not written, as past the limit
+    }
+
+    // job's frame, made with renderer in a canvas of its own
+    static func makeAhead(_ job: AheadJob, renderer: ImlibRenderer, canvas: inout Canvas) -> AheadFrame {
+        var frame = AheadFrame(stamp: stamp(job.path))
+        // peek decodes, so a neighbor it turned down waits for its file to change
+        guard let next = renderer.peek(URL(fileURLWithPath: job.path)) else { return frame }
+        defer { renderer.release(next.image) }
+        guard next.size.width * next.size.height <= 25_000_000 else { return frame }
+        var view = job.view
+        view.setImageSize(next.size, resetView: true) // as loading it will
+        let pixels = framePixels(view, image: true, kitty: true, sixel: false, cellHeight: job.cellHeight, canvas: job.canvas)
+        (frame.size, frame.view) = (next.size, view)
+        (frame.width, frame.height, frame.scale) = pixels
+        guard (job.raw ? 3 : 4) * pixels.width * pixels.height <= job.limit,
+              let image = canvas.sized(pixels.width, pixels.height) else { return frame }
+        frame.opaque = renderer.drawStill(next.image, view: view, gamma: job.gamma, contrast: job.contrast, into: image,
+                                          width: pixels.width, height: pixels.height, scale: pixels.scale)
+        // in a file, a frame with transparency takes 4 bytes a pixel, which must fit before it is written
+        let bytes = (job.raw && frame.opaque ? 3 : 4) * pixels.width * pixels.height
+        guard bytes <= job.limit else { return frame }
+        if job.raw {
+            guard pixelFile(of: image, at: job.file, alpha: !frame.opaque) != nil else { return frame }
+        } else {
+            guard let png = png(of: image, alpha: !frame.opaque), FileManager.default.createFile(atPath: job.file, contents: png)
+            else { return frame }
+        }
+        frame.bytes = bytes
+        return frame
+    }
+
+    // a frame made ahead, sent to the terminal unless it went stale meanwhile, as with another
+    // layout or a file that changed, or no longer fits
+    private func sendAhead(_ job: AheadJob, _ frame: AheadFrame, forgotten: Int) {
+        aheadBusy = false
+        // made for a layout or a file that changed meanwhile: dropped, and the frames go ahead anew
+        guard forgotten == framesForgotten else {
+            unlink(job.file)
+            schedulePrefetch()
+            return
+        }
+        guard let view = frame.view, let size = frame.size else {
+            notAhead.insert(job.path)
+            schedulePrefetch()
+            return
+        }
+        // the frames it must fit beside may have grown meanwhile, as with antialiasing turned off;
+        // one that no longer fits waits for the next frame shown
+        guard frame.bytes > 0, reservedBytes(before: job.path) + frame.bytes <= Self.keptBudget else {
+            unlink(job.file)
+            return
+        }
+        let key = key(path: job.path, frame: 0, rotation: 0, flipH: false, flipV: false, view: view,
+                      pixels: (frame.width, frame.height, frame.scale), gamma: job.gamma, contrast: job.contrast)
+        // the viewer drew the same frame meanwhile, as when it went to the image first; a second one
+        // would leave the first in the terminal, kept by no one
+        guard kept[key] == nil else {
+            unlink(job.file)
+            schedulePrefetch()
+            return
+        }
+        let id = newImageID()
+        // under the status bar's last cell, whose background hides it
+        let hidden = placeAhead && !Self.tmux && viewer.barVisible && rows > imageRows
+        let keys = hidden ? "a=T,i=\(id),p=2,c=1,r=1,z=-1073741825,C=1" : "a=t,i=\(id)"
+        let command: [UInt8]
+        if job.raw {
+            let file = Data(job.file.utf8).base64EncodedString()
+            command = Array(Self.command("\(keys),f=\(frame.opaque ? 24 : 32),s=\(frame.width),v=\(frame.height),t=t,q=2;\(file)").utf8)
+        } else {
+            guard let png = FileManager.default.contents(atPath: job.file) else { return }
+            unlink(job.file)
+            command = Self.kittyImage(png, keys: keys)
+        }
+        if let stamp = frame.stamp { loaded[job.path] = (ImageInfo(size: size, delays: [0.1]), stamp) }
+        keep(key, id: id, bytes: frame.bytes)
+        placedAhead = placedAhead || hidden
+        let cell = hidden ? Array("\u{1b}[\(rows);\(cols)H".utf8) : []
+        Self.writeAll(tty, cell + command + (hidden ? Array("\u{1b}[H".utf8) : []) + trimKept(sparing: key))
+        schedulePrefetch()
+    }
+
+    // job made by the helper, on another core, with an Imlib2 of its own; made here, between keys,
+    // when the helper cannot run
+    private func runAhead(_ job: AheadJob, forgotten: Int) {
+        guard let helper = helper ?? startHelper(), var line = try? JSONEncoder().encode(job) else {
+            let frame = Self.makeAhead(job, renderer: renderer, canvas: &aheadCanvas)
+            sendAhead(job, frame, forgotten: forgotten)
+            return
+        }
+        line.append(0x0a)
+        helperJobs.append((job, forgotten))
+        if (try? helper.input.write(contentsOf: line)) == nil { helperGone() }
+    }
+
+    // the same binary, in its helper's mode, reading jobs on its stdin
+    private func startHelper() -> (process: Process, input: FileHandle, answers: DispatchSourceRead)? {
+        guard !helperFailed else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/proc/self/exe")
+        process.arguments = ["--frame-ahead"]
+        let jobs = Pipe(), answers = Pipe()
+        process.standardInput = jobs
+        process.standardOutput = answers
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else {
+            helperFailed = true
+            return nil
+        }
+        let fd = answers.fileHandleForReading.fileDescriptor
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .main)
+        source.setEventHandler { [unowned self] in self.readHelper(fd) }
+        source.resume()
+        helper = (process, jobs.fileHandleForWriting, source)
+        return helper
+    }
+
+    // the helper's answers, one JSON line a job, in order
+    private func readHelper(_ fd: Int32) {
+        var bytes = [UInt8](repeating: 0, count: 4096)
+        let n = read(fd, &bytes, bytes.count)
+        if n < 0, errno == EINTR || errno == EAGAIN { return }
+        guard n > 0 else { return helperGone() }
+        helperAnswer += bytes[..<n]
+        while let end = helperAnswer.firstIndex(of: 0x0a) {
+            let line = Data(helperAnswer[..<end])
+            helperAnswer.removeSubrange(...end)
+            guard !helperJobs.isEmpty else { continue }
+            let pending = helperJobs.removeFirst()
+            let frame = (try? JSONDecoder().decode(AheadFrame.self, from: line)) ?? AheadFrame()
+            sendAhead(pending.job, frame, forgotten: pending.forgotten)
+        }
+    }
+
+    // a helper that ended, or stopped reading, makes no more frames; the main queue makes them
+    private func helperGone() {
+        helper?.answers.cancel()
+        helper = nil
+        helperFailed = true
+        for pending in helperJobs { unlink(pending.job.file) }
+        helperJobs = []
+        helperAnswer = []
+        aheadBusy = false
+        schedulePrefetch() // on the main queue from now on
+    }
+
+    // what must stay in the terminal beside a frame of path: the shown frame, and those of the
+    // neighbors before path in the way the viewer is going, which one sent ahead must not push out,
+    // or the two would push each other out for as long as no key comes
+    private func reservedBytes(before path: String) -> Int {
+        var reserved = kept.values.first { $0.id == shownImage }?.bytes ?? 0
+        for index in [viewer.current + direction, viewer.current - direction] where viewer.files.indices.contains(index) {
+            let neighbor = viewer.files[index].path
+            if neighbor == path { break }
+            reserved += kept.first { $0.key.path == neighbor }?.value.bytes ?? 0
+        }
+        return reserved
+    }
+
+    // The helper's side: jobs come as JSON lines on stdin and frames go back the same way, until
+    // the viewer, ending, closes its end
+    static func runAheadHelper() -> Never {
+        let renderer = ImlibRenderer(viewer: Viewer(options: Options(), files: []))
+        renderer.clearBackground = true
+        imlib_set_cache_size(0) // each image goes ahead once, as the terminal keeps its frame; the viewer keeps its own
+        var canvas = Canvas()
+        while let line = readLine(strippingNewline: true) {
+            let frame = (try? JSONDecoder().decode(AheadJob.self, from: Data(line.utf8)))
+                .map { makeAhead($0, renderer: renderer, canvas: &canvas) } ?? AheadFrame()
+            var answer = (try? JSONEncoder().encode(frame)) ?? Data("{}".utf8)
+            answer.append(0x0a)
+            guard (try? FileHandle.standardOutput.write(contentsOf: answer)) != nil else { break }
+        }
+        exit(0)
     }
 
     // While no key comes, the next image, then the previous one, goes to the terminal in its
@@ -560,24 +778,30 @@ final class TerminalUI: ViewerUI {
         guard kitty || sixel, hasImageArea, !viewer.thumbnailMode else { return }
         let work = DispatchWorkItem { [unowned self] in self.prefetchNeighbor() }
         prefetch = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+        // the helper makes a kitty frame off the main queue, so it starts at once; sixels are drawn
+        // here, so they wait for keys that come in a burst
+        DispatchQueue.main.asyncAfter(deadline: .now() + (kitty && !helperFailed ? 0 : 0.1), execute: work)
     }
 
     private func prefetchNeighbor() {
         var ready = pollfd(fd: tty, events: Int16(POLLIN), revents: 0)
-        guard !imageDirty, !chafaAhead, poll(&ready, 1, 0) == 0 else { return } // a key or a frame comes first
-        // the shown frame stays, and so does the neighbor before: one that would push it out waits,
-        // or the two would push each other out for as long as no key comes
-        var reserved = kept.values.first { $0.id == shownImage }?.bytes ?? 0
+        guard !imageDirty, !chafaAhead, !aheadBusy, poll(&ready, 1, 0) == 0 else { return } // a key or a frame comes first
         for index in [viewer.current + direction, viewer.current - direction] where viewer.files.indices.contains(index) {
             let entry = viewer.files[index]
-            if let frame = kept.first(where: { $0.key.path == entry.path }) {
-                reserved += frame.value.bytes
-                continue
-            }
+            if kept.keys.contains(where: { $0.path == entry.path }) { continue }
             if chafaFrames.keys.contains(where: { $0.path == entry.path }) { continue }
-            // peek decodes, so a neighbor it turned down waits for its file to change
             guard !notAhead.contains(entry.path) else { continue }
+            if kitty {
+                aheadFiles += 1
+                let file = imageFiles.map { "\($0)/ahead-\(aheadFiles)" } ?? frame + "-ahead.png"
+                let job = AheadJob(path: entry.path, view: viewer.viewport, canvas: canvasSize, gamma: viewer.gamma,
+                                   contrast: viewer.contrast, cellHeight: cell.height, file: file, raw: imageFiles != nil,
+                                   limit: Self.keptBudget - reservedBytes(before: entry.path))
+                aheadBusy = true
+                runAhead(job, forgotten: framesForgotten)
+                return
+            }
+            // sixels: peek decodes, so a neighbor it turned down waits for its file to change
             let stamp = Self.stamp(entry.path)
             guard let next = renderer.peek(entry.url) else {
                 notAhead.insert(entry.path)
@@ -591,48 +815,29 @@ final class TerminalUI: ViewerUI {
             var view = viewer.viewport
             view.setImageSize(next.size, resetView: true) // as loading it will
             let pixels = framePixels(view, image: true)
-            let bytes = (imageFiles == nil ? 4 : 3) * pixels.width * pixels.height // as transmit counts
-            guard !kitty || reserved + bytes <= Self.keptBudget else { return }
             let key = key(path: entry.path, frame: 0, rotation: 0, flipH: false, flipV: false, view: view, pixels: pixels)
             guard let canvas = makeCanvas(pixels.width, pixels.height) else { return }
-            let opaque = renderer.drawStill(next.image, view: view, into: canvas, width: pixels.width,
-                                            height: pixels.height, scale: pixels.scale)
-            if !kitty { // chafa reads the frame from a file of its own, as the view's may be drawn meanwhile
-                guard let png = Self.png(of: canvas, level: Z_NO_COMPRESSION, alpha: !opaque),
-                      FileManager.default.createFile(atPath: frame + "-ahead", contents: png) else { return }
-                if let stamp { loaded[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
-                chafaAhead = true
-                let arguments = chafa + [chafaSize, frame + "-ahead"]
-                let forgotten = framesForgotten
-                DispatchQueue.global(qos: .utility).async {
-                    let drawn = Self.chafaOutput(arguments, sixelHeight: pixels.height)
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self else { return }
-                        self.chafaAhead = false
-                        // a file that changed, or another layout, meanwhile makes the frame stale;
-                        // after a failure, the next frame tries again
-                        guard let drawn, forgotten == self.framesForgotten else { return }
-                        self.keepChafa(key, drawn)
-                        self.schedulePrefetch()
-                    }
-                }
-                return
-            }
-            // in a file, a frame with transparency takes 4 bytes a pixel, which must fit before it is written
-            guard imageFiles == nil || opaque || reserved + 4 * pixels.width * pixels.height <= Self.keptBudget else { return }
-            let id = newImageID()
-            // a frame that went as PNG, as when the disk is full, takes more room than counted
-            // under the status bar's last cell, whose background hides it
-            let hidden = placeAhead && !Self.tmux && viewer.barVisible && rows > imageRows
-            guard let sent = transmit(canvas, id: id, place: false, opaque: opaque, hidden: hidden),
-                  reserved + sent.bytes <= Self.keptBudget
-            else { return }
+            let opaque = renderer.drawStill(next.image, view: view, gamma: viewer.gamma, contrast: viewer.contrast,
+                                            into: canvas, width: pixels.width, height: pixels.height, scale: pixels.scale)
+            // chafa reads the frame from a file of its own, as the view's may be drawn meanwhile
+            guard let png = Self.png(of: canvas, level: Z_NO_COMPRESSION, alpha: !opaque),
+                  FileManager.default.createFile(atPath: frame + "-ahead", contents: png) else { return }
             if let stamp { loaded[entry.path] = (ImageInfo(size: next.size, delays: [0.1]), stamp) }
-            keep(key, id: id, bytes: sent.bytes)
-            let cell = hidden ? Array("\u{1b}[\(rows);\(cols)H".utf8) : []
-            placedAhead = placedAhead || hidden
-            Self.writeAll(tty, cell + sent.command + (hidden ? Array("\u{1b}[H".utf8) : []) + trimKept(sparing: key))
-            schedulePrefetch()
+            chafaAhead = true
+            let arguments = chafa + [chafaSize, frame + "-ahead"]
+            let forgotten = framesForgotten
+            DispatchQueue.global(qos: .utility).async {
+                let drawn = Self.chafaOutput(arguments, sixelHeight: pixels.height)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.chafaAhead = false
+                    // a file that changed, or another layout, meanwhile makes the frame stale;
+                    // after a failure, the next frame tries again
+                    guard let drawn, forgotten == self.framesForgotten else { return }
+                    self.keepChafa(key, drawn)
+                    self.schedulePrefetch()
+                }
+            }
             return
         }
     }
@@ -813,10 +1018,14 @@ final class TerminalUI: ViewerUI {
         return info
     }
 
-    // the renderer with the current image, before it draws it
+    // the renderer with the current image, its frame, turn and colors, before it draws it
     private func loadRenderer() {
-        guard let entry = viewer.currentEntry, rendererPath != entry.path else { return }
-        _ = loadNow(entry.url)
+        if let entry = viewer.currentEntry, rendererPath != entry.path {
+            _ = loadNow(entry.url)
+            rendererBehind = true
+        }
+        guard rendererBehind else { return }
+        rendererBehind = false
         renderer.imageChanged()
     }
 
@@ -828,8 +1037,9 @@ final class TerminalUI: ViewerUI {
                 Int(info.st_size), Int(truncatingIfNeeded: info.st_ino)]
     }
 
+    // the renderer catches up once it draws, which a kept frame never needs
     func imageChanged() {
-        if rendererPath == viewer.currentEntry?.path { renderer.imageChanged() }
+        rendererBehind = true
         if viewer.current != lastIndex {
             direction = viewer.current > lastIndex ? 1 : -1
             lastIndex = viewer.current
@@ -989,10 +1199,14 @@ final class TerminalUI: ViewerUI {
     // linearly, so an image shown larger than its pixels goes at those, which it scales itself;
     // not over the checkerboard, whose squares would grow with it.
     private func framePixels(_ view: Viewport, image: Bool) -> (width: Int, height: Int, scale: Double) {
-        var scale = kitty || sixel ? cell.height / 16 : 1
+        Self.framePixels(view, image: image, kitty: kitty, sixel: sixel, cellHeight: cell.height, canvas: canvasSize)
+    }
+
+    static func framePixels(_ view: Viewport, image: Bool, kitty: Bool, sixel: Bool, cellHeight: Double,
+                            canvas: CGSize) -> (width: Int, height: Int, scale: Double) {
+        var scale = kitty || sixel ? cellHeight / 16 : 1
         if kitty, image, view.antialias, !view.alphaLayer, view.zoom * scale > 1 { scale = 1 / view.zoom }
-        return (max(1, Int((canvasSize.width * scale).rounded())), max(1, Int((canvasSize.height * scale).rounded())),
-                scale)
+        return (max(1, Int((canvas.width * scale).rounded())), max(1, Int((canvas.height * scale).rounded())), scale)
     }
 
     // the current view drawn into the canvas, and whether it came out opaque
@@ -1003,22 +1217,25 @@ final class TerminalUI: ViewerUI {
         return (canvas, renderer.render(into: canvas, width: pixels.width, height: pixels.height, scale: pixels.scale))
     }
 
-    // the canvas, made anew for another size
-    private func makeCanvas(_ width: Int, _ height: Int) -> Imlib_Image? {
-        if canvasPixels.width != width || canvasPixels.height != height {
-            if let canvas {
-                imlib_context_set_image(canvas)
-                imlib_free_image()
+    // the view's canvas, made anew for another size
+    private func makeCanvas(_ width: Int, _ height: Int) -> Imlib_Image? { canvas.sized(width, height) }
+
+    struct Canvas {
+        private(set) var image: Imlib_Image?
+        private(set) var width = 0, height = 0
+
+        // a canvas that could not be made, as with too little memory, is tried again next time
+        mutating func sized(_ width: Int, _ height: Int) -> Imlib_Image? {
+            if image == nil || self.width != width || self.height != height {
+                if let image {
+                    imlib_context_set_image(image)
+                    imlib_free_image()
+                }
+                image = imlib_create_image(Int32(width), Int32(height))
+                (self.width, self.height) = image == nil ? (0, 0) : (width, height)
             }
-            canvas = imlib_create_image(Int32(width), Int32(height))
-            canvasPixels = (width, height)
-            if let canvas {
-                imlib_context_set_image(canvas)
-                imlib_image_set_format("png")
-                imlib_image_attach_data_value("compression", nil, 1, nil) // quick to write, read at once
-            }
+            return image
         }
-        return canvas
     }
 
     // The canvas as a PNG: 8-bit RGB, or RGBA with alpha, each row with the Up filter, zlib at its
@@ -1083,7 +1300,7 @@ final class TerminalUI: ViewerUI {
         }
         guard let canvas = drawCanvas(), let png = Self.png(of: canvas.image, level: Z_NO_COMPRESSION, alpha: !canvas.opaque),
               FileManager.default.createFile(atPath: frame, contents: png),
-              let drawn = Self.chafaOutput(chafa + [chafaSize, frame], sixelHeight: sixel ? canvasPixels.height : nil)
+              let drawn = Self.chafaOutput(chafa + [chafaSize, frame], sixelHeight: sixel ? self.canvas.height : nil)
         else { return nil }
         if let key { keepChafa(key, drawn) }
         return drawn
