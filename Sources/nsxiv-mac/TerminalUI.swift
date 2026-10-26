@@ -819,8 +819,8 @@ final class TerminalUI: ViewerUI {
     }
 
     // While no key comes, the next image, then the previous one, goes to the terminal in its
-    // first view, one at a time, made by the helper; for sixels, chafa makes the frame in the
-    // background.
+    // first view, one at a time, made by the helper, or on the main queue when the helper cannot
+    // run; for sixels, chafa makes the frame in the background.
     // shortcut: a sixel frame decodes on the main queue, so a key that comes meanwhile waits for
     // it, and images over 25 megapixels are left out; the helper would decode them alongside
     private func schedulePrefetch() {
