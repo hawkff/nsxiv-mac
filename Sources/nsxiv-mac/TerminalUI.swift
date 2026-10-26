@@ -713,7 +713,7 @@ final class TerminalUI: ViewerUI {
     static func runAheadHelper() -> Never {
         let renderer = ImlibRenderer(viewer: Viewer(options: Options(), files: []))
         renderer.clearBackground = true
-        imlib_set_cache_size(32 << 20) // the images it just made, as the viewer goes back and forth; the viewer keeps its own
+        imlib_set_cache_size(0) // each image goes ahead once, as the terminal keeps its frame; the viewer keeps its own
         var canvas = Canvas()
         while let line = readLine(strippingNewline: true) {
             let frame = (try? JSONDecoder().decode(AheadJob.self, from: Data(line.utf8)))
