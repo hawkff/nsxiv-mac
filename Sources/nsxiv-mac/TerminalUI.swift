@@ -658,8 +658,8 @@ final class TerminalUI: ViewerUI {
         let width = crop?.width ?? pixels.width, height = crop?.height ?? pixels.height
         (frame.sentWidth, frame.sentHeight) = (width, height)
         guard (job.raw ? 3 : 4) * width * height <= job.limit, let image = canvas.sized(width, height) else { return frame }
-        frame.opaque = renderer.drawStill(next.image, view: crop == nil ? view : view.atOrigin, gamma: job.gamma,
-                                          contrast: job.contrast, into: image, width: width, height: height, scale: pixels.scale)
+        frame.opaque = renderer.drawStill(next.image, view: view, gamma: job.gamma, contrast: job.contrast, into: image,
+                                          width: width, height: height, scale: pixels.scale, whole: crop != nil)
         // in a file, a frame with transparency takes 4 bytes a pixel, which must fit before it is written
         let bytes = (job.raw && frame.opaque ? 3 : 4) * width * height
         guard bytes <= job.limit else { return frame }
@@ -1266,8 +1266,7 @@ final class TerminalUI: ViewerUI {
         let pixels = framePixels(viewer.viewport, image: !viewer.thumbnailMode && viewer.image != nil)
         let width = crop?.width ?? pixels.width, height = crop?.height ?? pixels.height
         guard let canvas = makeCanvas(width, height) else { return nil }
-        let view = crop == nil ? nil : viewer.viewport.atOrigin
-        return (canvas, renderer.render(into: canvas, width: width, height: height, scale: pixels.scale, view: view))
+        return (canvas, renderer.render(into: canvas, width: width, height: height, scale: pixels.scale, whole: crop != nil))
     }
 
     // the view's canvas, made anew for another size

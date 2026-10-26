@@ -363,6 +363,35 @@ struct RegressionChecks {
                "a PNG frame with alpha keeps its pixels and their alpha: \((0..<6).map { String(clearDecoded[$0], radix: 16) })")
         imlib_free_image()
 
+        // An image drawn whole, alone in its frame, keeps its edges though its size there rounds apart
+        // from where the view has it: 1600x236 at 50% in a view of 800x464 units is 1000x147.5
+        // terminal pixels, a frame of 1000x148, whose first row is the red top and last the blue bottom
+        let wholeRenderer = ImlibRenderer(viewer: Viewer(options: Options(), files: []))
+        wholeRenderer.clearBackground = true
+        guard let edged = imlib_create_image(1600, 236), let wholeFrame = imlib_create_image(1000, 148) else {
+            fatalError("no image")
+        }
+        imlib_context_set_image(edged)
+        imlib_image_set_has_alpha(0)
+        let edgedPixels = imlib_image_get_data()!
+        for row in 0..<236 {
+            for column in 0..<1600 { edgedPixels[row * 1600 + column] = row == 0 ? 0xffff_0000 : row == 235 ? 0xff00_00ff : 0xff00_ff00 }
+        }
+        imlib_image_put_back_data(edgedPixels)
+        var half = Viewport()
+        half.viewSize = CGSize(width: 800, height: 464)
+        half.setImageSize(CGSize(width: 1600, height: 236), resetView: true)
+        let wholeOpaque = wholeRenderer.drawStill(edged, view: half, gamma: 0, contrast: 0, into: wholeFrame, width: 1000,
+                                             height: 148, scale: 1.25, whole: true)
+        imlib_context_set_image(wholeFrame)
+        let wholePixels = imlib_image_get_data_for_reading_only()!
+        let top = wholePixels[500], bottom = wholePixels[147 * 1000 + 500]
+        assert(wholeOpaque && top >> 24 == 0xff && bottom >> 24 == 0xff && (top >> 16) & 0xff > 0 && bottom & 0xff > 0,
+               "an image drawn whole keeps its first and last rows: \(String(top, radix: 16)) \(String(bottom, radix: 16))")
+        imlib_free_image()
+        imlib_context_set_image(edged)
+        imlib_free_image()
+
         // A revisit takes the decoded image from Imlib2's cache while the file's time stays, which an
         // hour ahead a rewrite's ctime cannot pass; a reload, an invalidation and a new time read the file.
         let renderer = ImlibRenderer(viewer: Viewer(options: Options(), files: []))

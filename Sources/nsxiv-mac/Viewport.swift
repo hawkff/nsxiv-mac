@@ -29,13 +29,6 @@ struct Viewport: Codable {
 
     var imageRect: CGRect { CGRect(origin: pan, size: displaySize) }
 
-    // the same image and zoom with the image at the origin, for drawing it alone
-    var atOrigin: Viewport {
-        var view = self
-        view.pan = .zero
-        return view
-    }
-
     mutating func setImageSize(_ size: CGSize, resetView: Bool) {
         imageSize = size
         if resetView { applyScaleMode() } else { clampPan() }
