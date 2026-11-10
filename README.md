@@ -182,6 +182,11 @@ current file) arrive on stdin, one path per line. `etc/key-handler.example`
 ships clipboard, trash, and reveal actions; on Linux they use wl-copy or xclip,
 gio, and xdg-open.
 
+The viewer waits until the handler ends. A handler can ask a question on the
+terminal the viewer runs in, or was started from, by reading `/dev/tty`. On
+Linux, the viewer drops the keys and clicks made while the handler runs. After
+the handler, it reloads the files whose size or times changed.
+
 ## File manager integration
 
 `etc/nsxiv-rifle` opens a single image and lets you browse its whole
