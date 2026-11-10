@@ -86,11 +86,13 @@ final class Viewer {
     private var watchPending = false
     private var pendingReload: DispatchWorkItem?
     private var markedPrinted = false
+    private var startZoom: CGFloat? // -z, until the first image that loads takes it
 
     init(options: Options, files: [FileEntry]) {
         self.options = options
         self.files = files
         slideshowDelay = options.slideshow ?? Config.slideshowDelay
+        startZoom = options.zoom
         current = max(0, min(files.count - 1, options.startAt - 1))
         alternate = current
         thumbnailMode = options.thumbnailMode
@@ -109,7 +111,6 @@ final class Viewer {
             loadCurrent()
         }
         if options.fullscreen { ui?.toggleFullscreen() }
-        if let z = options.zoom { changeView { $0.setZoom(z) } }
         if options.slideshow != nil, !thumbnailMode { startSlideshow() }
         ui?.barChanged()
     }
@@ -270,6 +271,7 @@ final class Viewer {
         }
         ui?.fitWindow()
         viewport.setImageSize(displaySize ?? .zero, resetView: true)
+        takeStartZoom()
         ui?.imageChanged()
         ui?.viewChanged()
         if image?.isAnimated == true { startAnimation() }
@@ -285,6 +287,14 @@ final class Viewer {
         }
     }
 
+    // -z holds from the first image that loads, which after -t, or a file that would not load
+    // until it changed, is a later load than the first
+    private func takeStartZoom() {
+        guard let zoom = startZoom, image != nil else { return }
+        startZoom = nil
+        viewport.setZoom(zoom)
+    }
+
     // r, a changed file, the key-handler: a fresh thumbnail, and in image mode a fresh image
     func reloadCurrent() {
         guard let entry = currentEntry else { return }
@@ -298,6 +308,7 @@ final class Viewer {
         // a fit mode fits a file whose size changed, say one a key-handler turned
         let size = displaySize ?? .zero
         viewport.setImageSize(size, resetView: size != oldSize && viewport.scaleMode != .manual)
+        takeStartZoom()
         ui?.imageChanged()
         ui?.viewChanged()
         ui?.fitWindow()
@@ -613,6 +624,17 @@ final class Viewer {
 
     // MARK: - key bindings
 
+    // nsxiv names a key for its handler by X keysym: "comma" where the key types ",". Letters and
+    // digits name themselves, and the keys that type nothing have such names already.
+    static let keysymNames = [
+        " ": "space", "!": "exclam", "\"": "quotedbl", "#": "numbersign", "$": "dollar", "%": "percent",
+        "&": "ampersand", "'": "apostrophe", "(": "parenleft", ")": "parenright", "*": "asterisk",
+        "+": "plus", ",": "comma", "-": "minus", ".": "period", "/": "slash", ":": "colon", ";": "semicolon",
+        "<": "less", "=": "equal", ">": "greater", "?": "question", "@": "at", "[": "bracketleft",
+        "\\": "backslash", "]": "bracketright", "^": "asciicircum", "_": "underscore", "`": "grave",
+        "{": "braceleft", "|": "bar", "}": "braceright", "~": "asciitilde",
+    ]
+
     // a key the viewer does not get, a menu shortcut or one without a name, still ends a C-x
     // prefix, without running the handler
     func endPrefix() { prefixExternal = false }
@@ -621,7 +643,8 @@ final class Viewer {
     func handle(_ k: Keystroke) -> Bool {
         if prefixExternal {
             prefixExternal = false
-            if k.key != "Escape" { runKeyHandler(key: (k.ctrl ? "C-" : "") + k.key) } // Escape aborts, as in nsxiv
+            // Escape aborts, as in nsxiv, whose name for the key the handler gets
+            if k.key != "Escape" { runKeyHandler(key: (k.ctrl ? "C-" : "") + (Self.keysymNames[k.key] ?? k.key)) }
             return true
         }
         if k.ctrl {

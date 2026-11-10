@@ -55,6 +55,10 @@ final class TerminalUI: ViewerUI {
     private var kept: [FrameKey: (id: UInt32, bytes: Int)] = [:] // frames the terminal holds
     private var keptOrder: [FrameKey] = [] // least recently shown first
     private var shownImage: UInt32 = 0 // the kitty image on screen, 0 for none
+    // what the terminal stores of the frame on screen when the viewer does not keep it, as the grid's
+    private var unkeptShown = (id: UInt32(0), bytes: 0)
+    // the columns, rows, image rows and cell size the kept frames were made for
+    private var frameLayout: [Double] = []
     private var shownKey: FrameKey?
     private var lastImageID: UInt32 = 0
     private var lastIndex = 0 // of the image shown, for the way the viewer is going
@@ -493,10 +497,12 @@ final class TerminalUI: ViewerUI {
     }
 
     // the frames past the budget out of the terminal, least recently shown first, all but the
-    // shown one and spared, one just sent ahead
-    private func trimKept(sparing spared: FrameKey? = nil) -> [UInt8] {
+    // shown one and spared, one just sent ahead; a shown frame that is not kept counts toward
+    // the budget too, as do the incoming bytes of one about to come that will not be kept
+    private func trimKept(sparing spared: FrameKey? = nil, incoming: Int = 0) -> [UInt8] {
         var out = ""
-        var total = kept.values.reduce(0) { $0 + $1.bytes }
+        var total = kept.values.reduce(0) { $0 + $1.bytes } + incoming
+            + (unkeptShown.id == shownImage ? unkeptShown.bytes : 0)
         while total > Self.keptBudget || kept.count > Self.keptLimit,
               let oldest = keptOrder.first(where: { $0 != spared && $0 != shownKey }),
               let frame = kept.removeValue(forKey: oldest) {
@@ -514,6 +520,7 @@ final class TerminalUI: ViewerUI {
         // what other programs left, before the viewer sent any image of its own
         var show = Array((shownImage == 0 && kept.isEmpty ? Self.deleteImages : "").utf8)
         let id: UInt32
+        var unkept = 0
         let crop = key == nil ? nil : crop(viewer.viewport, scale: framePixels(viewer.viewport, image: true).scale)
         if let key, let frame = kept[key] {
             id = frame.id
@@ -524,13 +531,16 @@ final class TerminalUI: ViewerUI {
             id = newImageID()
             guard let canvas = drawCanvas(crop: crop), let sent = transmit(canvas.image, id: id, opaque: canvas.opaque, crop: crop)
             else { return nil }
-            show += Self.cursor(crop) + sent.command
-            if let key { keep(key, id: id, bytes: sent.bytes) }
+            if let key { keep(key, id: id, bytes: sent.bytes) } else { unkept = sent.bytes }
+            // room for the frame before it comes, so the terminal holds no more than the budget
+            // and the frame still on screen
+            show += trimKept(sparing: key, incoming: unkept) + Self.cursor(crop) + sent.command
         }
         if Self.tmux { show += Array(placeholders(id).utf8) }
         let hide = shownImage != id ? Array(hideShown().utf8) : []
         shownImage = id
         shownKey = key
+        unkeptShown = (id, unkept)
         return (show, hide + trimKept())
     }
 
@@ -725,7 +735,7 @@ final class TerminalUI: ViewerUI {
         keep(key, id: id, bytes: frame.bytes)
         placedAhead = placedAhead || hidden
         let cell = hidden ? Array("\u{1b}[\(rows);\(cols)H".utf8) : []
-        Self.writeAll(tty, cell + command + (hidden ? Array("\u{1b}[H".utf8) : []) + trimKept(sparing: key))
+        Self.writeAll(tty, trimKept(sparing: key) + cell + command + (hidden ? Array("\u{1b}[H".utf8) : []))
         schedulePrefetch()
     }
 
@@ -797,7 +807,8 @@ final class TerminalUI: ViewerUI {
     // neighbors before path in the way the viewer is going, which one sent ahead must not push out,
     // or the two would push each other out for as long as no key comes
     private func reservedBytes(before path: String) -> Int {
-        var reserved = kept.values.first { $0.id == shownImage }?.bytes ?? 0
+        var reserved = kept.values.first { $0.id == shownImage }?.bytes
+            ?? (unkeptShown.id == shownImage ? unkeptShown.bytes : 0) // the grid's frame, which is not kept
         for index in [viewer.current + direction, viewer.current - direction] where viewer.files.indices.contains(index) {
             let neighbor = viewer.files[index].path
             if neighbor == path { break }
@@ -1145,7 +1156,13 @@ final class TerminalUI: ViewerUI {
                 cell = (Double(Int(size.ws_xpixel) / cols), Double(Int(size.ws_ypixel) / rows))
             }
         }
-        forgetFrames { _ in true }
+        // frames made for other columns, rows or cells go; a change of mode alone, as to the grid
+        // and back, leaves the terminal the frames it holds
+        let layout = [Double(cols), Double(rows), Double(imageRows), cell.width, cell.height]
+        if layout != frameLayout {
+            frameLayout = layout
+            forgetFrames { _ in true }
+        }
         viewer.resizeCanvas(canvasSize)
         viewer.resizeGrid(canvasSize)
         setNeedsRedraw(image: true)

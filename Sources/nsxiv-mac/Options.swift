@@ -18,10 +18,12 @@ struct Options {
     var zoom: CGFloat?
     var scaleMode: ScaleMode?
     var geometry: CGSize?
+    var startFile: String?
     var paths: [String] = []
 
     static let usage = """
-    usage: \(Config.appName) [-bfiopqrtv] [-g WxH] [-n NUM] [-S DELAY] [-s MODE] [-z ZOOM] FILE...
+    usage: \(Config.appName) [-bfiopqrtv] [-g WxH] [-n NUM] [-S DELAY] [-s MODE] [-z ZOOM]
+           [--start-file FILE] FILE...
 
       -b            do not show the status bar
       -f            start in fullscreen
@@ -37,6 +39,8 @@ struct Options {
       -t            start in thumbnail mode
       -v            print version and exit
       -z ZOOM       set zoom level in percent
+      --start-file FILE
+                    start at FILE, or show it alone if it is not among the files
     """
 
     static func parse(_ arguments: [String]) -> Options {
@@ -53,6 +57,18 @@ struct Options {
             return args[i]
         }
 
+        // a number out of range, or no number, ends with a message, as in nsxiv
+        func invalid(_ flag: String, _ text: String) -> Never {
+            warn("invalid argument for option \(flag): \(text)")
+            exit(2)
+        }
+
+        func number(_ flag: String, in range: ClosedRange<Double>) -> Double {
+            let text = value(flag)
+            guard let number = Double(text), range.contains(number) else { invalid(flag, text) }
+            return number
+        }
+
         while i < args.count {
             let a = args[i]
             switch a {
@@ -65,11 +81,17 @@ struct Options {
             case "-q", "--quiet": o.quiet = true
             case "-p", "--private": o.privateMode = true
             case "-n", "--start-at":
-                o.startAt = Int(value(a)) ?? 1
+                let text = value(a)
+                guard let n = Int(text), n > 0 else { invalid(a, text) }
+                o.startAt = n
+            case "--start-file":
+                o.startFile = value(a)
             case "-S", "--ss-delay":
-                o.slideshow = max(0.1, TimeInterval(value(a)) ?? Config.slideshowDelay)
+                // at least a tenth of a second, and at most what nsxiv takes, which counts tenths in
+                // 32 bits; the timer takes no delay of centuries
+                o.slideshow = max(0.1, number(a, in: Double.leastNonzeroMagnitude...Double(UInt32.max) / 10))
             case "-z", "--zoom":
-                if let z = Double(value(a)), z > 0 { o.zoom = CGFloat(z / 100) }
+                o.zoom = CGFloat(number(a, in: Double.leastNonzeroMagnitude...Double.greatestFiniteMagnitude) / 100)
             case "-s", "--scale-mode":
                 switch value(a) {
                 case "d": o.scaleMode = .down
@@ -82,10 +104,14 @@ struct Options {
                     exit(2)
                 }
             case "-g", "--geometry":
-                let parts = value(a).lowercased().split(separator: "x")
-                if parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]), w > 0, h > 0 {
-                    o.geometry = CGSize(width: w, height: h)
-                }
+                let text = value(a), parts = text.lowercased().split(separator: "x")
+                // a height that is no number may have an X geometry's position after it, as the
+                // +10+10 in 800x600+10+10, which is left out
+                let height = parts.last.flatMap { Double($0) ?? Double($0.prefix { !"+-".contains($0) }) }
+                let pixels = 1...Double(Int16.max) // X11 counts a window's pixels in 16 bits
+                guard parts.count == 2, let w = Double(parts[0]), let h = height,
+                      pixels.contains(w), pixels.contains(h) else { invalid(a, text) }
+                o.geometry = CGSize(width: w.rounded(), height: h.rounded())
             case "-v", "--version":
                 print("\(Config.appName) \(Config.appVersion)")
                 exit(0)

@@ -16,6 +16,7 @@ final class ImlibRenderer {
     private var loadedPath: String?
     private var frames: [Imlib_Image] = []
     private var shown: Imlib_Image?
+    private var shownFrom: [Int] = [] // the frame, turn and flips that shown was made from
     private let colorModifier: Imlib_Color_Modifier
 
     private var thumbs: [String: Imlib_Image] = [:]
@@ -111,24 +112,30 @@ final class ImlibRenderer {
 
     // another frame, rotation, flip, gamma or contrast
     func imageChanged() {
-        if let shown, !frames.contains(shown) {
-            imlib_context_set_image(shown)
-            imlib_free_image()
-        }
-        shown = nil
-        if viewer.image != nil, frames.indices.contains(viewer.frameIndex) {
-            let frame = frames[viewer.frameIndex]
-            if viewer.rotation == 0, !viewer.flipH, !viewer.flipV {
-                shown = frame
-            } else {
-                imlib_context_set_image(frame)
-                if let copy = imlib_clone_image() {
-                    imlib_context_set_image(copy)
-                    // turn first, then flip what is on screen, as the macOS side does
-                    imlib_image_orientate(Int32(viewer.rotation / 90))
-                    if viewer.flipH { imlib_image_flip_horizontal() }
-                    if viewer.flipV { imlib_image_flip_vertical() }
-                    shown = copy
+        // gamma and contrast leave the frame as it is turned and flipped: a copy that takes a
+        // quarter of a second to make of a 24-megapixel image is made once, not for each step
+        let from = [viewer.frameIndex, viewer.rotation, viewer.flipH ? 1 : 0, viewer.flipV ? 1 : 0]
+        if shown == nil || from != shownFrom {
+            shownFrom = from
+            if let shown, !frames.contains(shown) {
+                imlib_context_set_image(shown)
+                imlib_free_image()
+            }
+            shown = nil
+            if viewer.image != nil, frames.indices.contains(viewer.frameIndex) {
+                let frame = frames[viewer.frameIndex]
+                if viewer.rotation == 0, !viewer.flipH, !viewer.flipV {
+                    shown = frame
+                } else {
+                    imlib_context_set_image(frame)
+                    if let copy = imlib_clone_image() {
+                        imlib_context_set_image(copy)
+                        // turn first, then flip what is on screen, as the macOS side does
+                        imlib_image_orientate(Int32(viewer.rotation / 90))
+                        if viewer.flipH { imlib_image_flip_horizontal() }
+                        if viewer.flipV { imlib_image_flip_vertical() }
+                        shown = copy
+                    }
                 }
             }
         }

@@ -9,9 +9,10 @@ import Foundation
 final class FakeUI: ViewerUI {
     var beeps = 0
     var loads = 0
+    var fails = false // as with a file that is no image
     func loadImage(_ url: URL) -> ImageInfo? {
         loads += 1
-        return ImageInfo(size: CGSize(width: 320, height: 160), delays: [0.1])
+        return fails ? nil : ImageInfo(size: CGSize(width: 320, height: 160), delays: [0.1])
     }
     func imageChanged() {}
     func viewChanged() {}
@@ -61,6 +62,26 @@ struct RegressionChecks {
                && recursive.last?.url.deletingLastPathComponent().lastPathComponent == "nested",
                "recursive scan must retain only visible images: \(recursive.map(\.path))")
 
+        // --start-file: the image a file manager opened, among those of its directory
+        var listed = flat
+        assert(FileList.start(at: directory.appendingPathComponent("link.png").path, in: &listed, quiet: true) == 2
+               && listed.count == 2, "the viewer starts at the named file among the others: \(listed.map(\.path))")
+        assert(FileList.start(at: directory.appendingPathComponent("notes.txt").path, in: &listed, quiet: true) == 1
+               && listed.map(\.url.lastPathComponent) == ["notes.txt"], "a file the list lacks shows alone")
+        // a hard link to the first image under its name in another directory is an entry of its own
+        let twin = directory.appendingPathComponent("twin")
+        try fm.createDirectory(at: twin, withIntermediateDirectories: false)
+        try fm.linkItem(at: imageURL, to: twin.appendingPathComponent("frame.png"))
+        var deep = FileList.build(paths: [directory.path], recursive: true, quiet: true)
+        assert(FileList.start(at: twin.appendingPathComponent("frame.png").path, in: &deep, quiet: true) == 4,
+               "the viewer starts at the named entry, not at another link to its file: \(deep.map(\.path))")
+
+        let ranged = Options.parse(["-g", "640x4.796e+2", "-S", "0.5", "-z", "150", "--start-file", "b.png", "a.png"])
+        assert(ranged.geometry == CGSize(width: 640, height: 480) && ranged.slideshow == 0.5 && ranged.zoom == 1.5
+               && ranged.startFile == "b.png" && ranged.paths == ["a.png"], "options take their arguments")
+        assert(Options.parse(["-g", "800x600+10+10", "-S", "0.01", "a.png"]).geometry == CGSize(width: 800, height: 600)
+               && Options.parse(["-S", "0.01", "a.png"]).slideshow == 0.1,
+               "-g takes the size of an X geometry, and -S no less than a tenth of a second")
         let parsed = Options.parse(["-rtn5", "-sw", "a.png", "--", "-b.png"])
         assert(parsed.recursive && parsed.thumbnailMode && parsed.startAt == 5
                && parsed.scaleMode == ScaleMode.width && parsed.paths == ["a.png", "-b.png"],
@@ -142,11 +163,36 @@ struct RegressionChecks {
         assert(rows.neighbor(of: 1, .up) == 1 && rows.neighbor(of: 6, .down) == 6
                && rows.neighbor(of: 4, .down) == 7 && rows.neighbor(of: 5, .down) == 7,
                "the selection stays in its place at the top and bottom rows, and goes down to a short last row's end")
+
+        // -z with -t: no image is loaded for the zoom to go to until one shows
+        var startOptions = Options()
+        startOptions.zoom = 2
+        startOptions.thumbnailMode = true
+        let zoomed = Viewer(options: startOptions, files: files)
+        zoomed.ui = ui
+        zoomed.resizeCanvas(CGSize(width: 640, height: 480))
+        zoomed.start()
+        _ = zoomed.handle(Keystroke(key: "Return"))
+        assert(zoomed.viewport.zoom == 2, "-z holds from the first image that loads, also after the grid")
+        // and with a file that would not load at the start, from the reload that loads it
+        startOptions.thumbnailMode = false
+        ui.fails = true
+        let late = Viewer(options: startOptions, files: files)
+        late.ui = ui
+        late.resizeCanvas(CGSize(width: 640, height: 480))
+        late.start()
+        ui.fails = false
+        _ = late.handle(Keystroke(key: "r"))
+        assert(late.viewport.zoom == 2, "-z holds from a reload that loads what the start could not")
+
+        assert((0x20...0x7e).map { String(UnicodeScalar(UInt8($0))) }
+            .allSatisfy { $0.first!.isLetter || $0.first!.isNumber || Viewer.keysymNames[$0] != nil },
+            "each key that types a sign has nsxiv's name for a key-handler")
     }
 
-    // A key-handler gets the marked files on its stdin. One that only reads them leaves the image
-    // that shows as it is loaded; one that rewrites that image, though another is the marked one,
-    // has it loaded anew.
+    // A key-handler gets the marked files on its stdin and the key by nsxiv's name. One that only
+    // reads the files leaves the image that shows as it is loaded; one that rewrites that image,
+    // though another is the marked one, has it loaded anew.
     static func checkKeyHandler(directory: URL) throws {
         let fm = FileManager.default
         let shown = directory.appendingPathComponent("shown.png").path
@@ -156,8 +202,13 @@ struct RegressionChecks {
         try fm.createDirectory(at: handler.deletingLastPathComponent(), withIntermediateDirectories: true)
         for path in [shown, marked] { try Data("only stamped, never decoded".utf8).write(to: URL(fileURLWithPath: path)) }
         // for the key w, the handler appends to shown.png, which it finds from its own path
-        try Data("#!/bin/sh\ncat >\"$0.files\"\n[ \"$1\" != w ] || echo more >>\"${0%/config/*}/shown.png\"\n".utf8)
-            .write(to: handler)
+        try Data("""
+        #!/bin/sh
+        cat >"$0.files"
+        echo "$1" >"$0.key"
+        [ "$1" != w ] || echo more >>"${0%/config/*}/shown.png"
+
+        """.utf8).write(to: handler)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: handler.path)
         setenv("XDG_CONFIG_HOME", config.path, 1)
 
@@ -177,6 +228,10 @@ struct RegressionChecks {
                "a key-handler gets the marked files, and one that only reads them costs no load: \(given)")
         run("w")
         assert(ui.loads == loads + 1, "a key-handler that rewrote the image that shows has it loaded anew")
+        _ = viewer.handle(Keystroke(key: "x", ctrl: true))
+        _ = viewer.handle(Keystroke(key: ",", ctrl: true))
+        let named = try String(contentsOfFile: handler.path + ".key", encoding: .utf8)
+        assert(named == "C-comma\n", "a key-handler gets nsxiv's name for the key: \(named)")
     }
 
     #if os(macOS)
@@ -210,6 +265,15 @@ struct RegressionChecks {
             }
             window.isReleasedWhenClosed = false
             defer { withExtendedLifetime(controller) { window.close() } }
+            let typed = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                         windowNumber: window.windowNumber, context: nil, characters: "j",
+                                         charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38)!
+            app.postEvent(typed, atStart: false)
+            assert(app.nextEvent(matching: .keyDown, until: nil, inMode: .default, dequeue: false) != nil,
+                   "a posted key must wait in the queue, or the next check checks nothing")
+            controller.keyHandlerDidRun()
+            assert(app.nextEvent(matching: .keyDown, until: nil, inMode: .default, dequeue: true) == nil,
+                   "a key typed while a key-handler ran must not reach the viewer")
             let fitted = CGSize(width: 320, height: 160 + Config.barHeight)
             assert(window.frame.size == (geometry ?? fitted), "initial outer frame must match geometry or image")
 
@@ -249,6 +313,10 @@ struct RegressionChecks {
         assert(keyName(forKeysym: 0xff0d) == "Return" && keyName(forKeysym: 0xff51) == "Left",
                "other keys go by keysym name")
         assert(keyName(forKeysym: 0xffe1) == nil, "Shift alone is no key")
+        for (typed, name) in Viewer.keysymNames {
+            let keysym = KeySym(typed.unicodeScalars.first!.value)
+            assert(String(cString: XKeysymToString(keysym)) == name, "X names the key that types \(typed) otherwise than \(name)")
+        }
         let cut = ImlibRenderer.truncatedHead("abcdefgh", width: 5) { $0.count }
         assert(cut == "…efgh" && ImlibRenderer.truncatedHead("abc", width: 5) { $0.count } == "abc",
                "long names lose their start: \(cut)")
