@@ -17,7 +17,8 @@ final class FileWatcher {
         // link needs resolving, which on a network share takes a round trip a path component.
         var info = stat()
         let link = lstat(path, &info) == 0 && info.st_mode & S_IFMT == S_IFLNK
-        let url = link ? URL(fileURLWithPath: path).resolvingSymlinksInPath() : URL(fileURLWithPath: path)
+        let file = URL(fileURLWithPath: path, isDirectory: false)
+        let url = link ? file.resolvingSymlinksInPath() : file
         let name = url.lastPathComponent
         let fd = inotify_init1(Int32(IN_NONBLOCK | IN_CLOEXEC))
         guard fd >= 0 else { return nil }

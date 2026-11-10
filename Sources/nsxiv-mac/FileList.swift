@@ -11,7 +11,8 @@ struct FileEntry {
 
     init(path: String) {
         self.path = path
-        self.url = URL(fileURLWithPath: path)
+        // with isDirectory given, URL does not look the path up on disk, a round trip on a network share
+        self.url = URL(fileURLWithPath: path, isDirectory: false)
     }
 }
 
@@ -20,7 +21,7 @@ enum FileList {
         let fm = FileManager.default
         var out: [FileEntry] = []
         for p in paths {
-            let url = URL(fileURLWithPath: p).standardizedFileURL
+            let url = URL(fileURLWithPath: p, isDirectory: false).standardizedFileURL
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else {
                 if !quiet { warn("no such file: \(p)") }
@@ -44,7 +45,7 @@ enum FileList {
                 // stat() follows symlinks, so linked images count, as in nsxiv; a FIFO
                 // with an image name stays out, since opening it would block
                 var st = stat()
-                guard let url = item as? URL, isImagePath(url.path),
+                guard let url = item as? URL, Config.imageExtensions.contains(url.pathExtension.lowercased()),
                       stat(url.path, &st) == 0, st.st_mode & S_IFMT == S_IFREG
                 else { return nil }
                 return url.path
@@ -53,7 +54,16 @@ enum FileList {
             .map { FileEntry(path: $0) }
     }
 
-    static func isImagePath(_ p: String) -> Bool {
-        Config.imageExtensions.contains(URL(fileURLWithPath: p).pathExtension.lowercased())
+    // what tells a file that changed from one that did not: its times, size and inode; nil without the file
+    static func stamp(_ path: String) -> [Int]? {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
+        #if os(macOS)
+        let modified = info.st_mtimespec, changed = info.st_ctimespec
+        #else
+        let modified = info.st_mtim, changed = info.st_ctim
+        #endif
+        return [modified.tv_sec, modified.tv_nsec, changed.tv_sec, changed.tv_nsec,
+                Int(info.st_size), Int(truncatingIfNeeded: info.st_ino)]
     }
 }

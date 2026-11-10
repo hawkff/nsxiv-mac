@@ -8,7 +8,11 @@ import Foundation
 // stands in for a window: loads every file as a 320x160 still
 final class FakeUI: ViewerUI {
     var beeps = 0
-    func loadImage(_ url: URL) -> ImageInfo? { ImageInfo(size: CGSize(width: 320, height: 160), delays: [0.1]) }
+    var loads = 0
+    func loadImage(_ url: URL) -> ImageInfo? {
+        loads += 1
+        return ImageInfo(size: CGSize(width: 320, height: 160), delays: [0.1])
+    }
     func imageChanged() {}
     func viewChanged() {}
     func gridChanged() {}
@@ -83,6 +87,7 @@ struct RegressionChecks {
                "a window parked across an edge grows freely")
 
         checkBindings(files: (0..<5).map { _ in FileEntry(path: imageURL.path) })
+        try checkKeyHandler(directory: directory)
         #if os(macOS)
         try checkWindows(imageURL: imageURL)
         checkVision(image)
@@ -126,6 +131,52 @@ struct RegressionChecks {
         press("Return")
         press("k")
         assert(!viewer.thumbnailMode && ui.beeps == 1, "k before the first image beeps")
+        let loads = ui.loads
+        press("g")
+        assert(ui.loads == loads, "g on the image that shows keeps it as it is")
+
+        // 8 thumbnails in rows of 3, 3 and 2
+        var rows = GridLayout()
+        rows.viewSize = CGSize(width: 3 * rows.cellSize, height: 400)
+        rows.count = 8
+        assert(rows.neighbor(of: 1, .up) == 1 && rows.neighbor(of: 6, .down) == 6
+               && rows.neighbor(of: 4, .down) == 7 && rows.neighbor(of: 5, .down) == 7,
+               "the selection stays in its place at the top and bottom rows, and goes down to a short last row's end")
+    }
+
+    // A key-handler gets the marked files on its stdin. One that only reads them leaves the image
+    // that shows as it is loaded; one that rewrites that image, though another is the marked one,
+    // has it loaded anew.
+    static func checkKeyHandler(directory: URL) throws {
+        let fm = FileManager.default
+        let shown = directory.appendingPathComponent("shown.png").path
+        let marked = directory.appendingPathComponent("marked.png").path
+        let config = directory.appendingPathComponent("config")
+        let handler = config.appendingPathComponent("\(Config.appName)/exec/key-handler")
+        try fm.createDirectory(at: handler.deletingLastPathComponent(), withIntermediateDirectories: true)
+        for path in [shown, marked] { try Data("only stamped, never decoded".utf8).write(to: URL(fileURLWithPath: path)) }
+        // for the key w, the handler appends to shown.png, which it finds from its own path
+        try Data("#!/bin/sh\ncat >\"$0.files\"\n[ \"$1\" != w ] || echo more >>\"${0%/config/*}/shown.png\"\n".utf8)
+            .write(to: handler)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: handler.path)
+        setenv("XDG_CONFIG_HOME", config.path, 1)
+
+        let ui = FakeUI()
+        let viewer = Viewer(options: Options(), files: [FileEntry(path: shown), FileEntry(path: marked)])
+        viewer.ui = ui
+        viewer.start()
+        viewer.toggleMark(at: 1)
+        func run(_ key: String) {
+            _ = viewer.handle(Keystroke(key: "x", ctrl: true))
+            _ = viewer.handle(Keystroke(key: key))
+        }
+        let loads = ui.loads
+        run("c")
+        let given = try String(contentsOfFile: handler.path + ".files", encoding: .utf8)
+        assert(given == marked + "\n" && ui.loads == loads,
+               "a key-handler gets the marked files, and one that only reads them costs no load: \(given)")
+        run("w")
+        assert(ui.loads == loads + 1, "a key-handler that rewrote the image that shows has it loaded anew")
     }
 
     #if os(macOS)

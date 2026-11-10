@@ -325,6 +325,16 @@ final class X11UI: ViewerUI {
         return false
     }
 
+    // drops the keys and clicks that came while a key-handler ran, as nsxiv does; they were for
+    // what the window showed before. Key releases stay, for dropRepeats to tell a new press by.
+    func keyHandlerDidRun() {
+        XSync(dpy, 0)
+        var dropped = XEvent()
+        while XCheckMaskEvent(dpy, KeyPressMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                              &dropped) != 0 {}
+        dragging = false // its release may be among them
+    }
+
     // MARK: - drawing
 
     private func setNeedsRedraw() {

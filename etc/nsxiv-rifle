@@ -12,20 +12,23 @@ dir=$(dirname -- "$1")
 target=$(basename -- "$1")
 cd "$dir" || exec nsxiv-mac -- "$1"
 
-idx=0 count=0
-for f in *; do
-    [ -f "$f" ] || continue
-    ext=$(printf %s "${f##*.}" | tr '[:upper:]' '[:lower:]')
-    case "$ext" in
-    jpg | jpeg | jpe | png | gif | webp | heic | heif | bmp | tif | tiff | \
-        ico | icns | jp2 | avif | psd | tga | exr | pbm | pgm | ppm | sgi | dds | cr2 | nef)
-        count=$((count + 1))
-        set -- "$@" "$f"
-        [ "$f" = "$target" ] && idx=$count
-        ;;
-    esac
-done
-shift # drop the original argument, keep the built list
+# Lists the directory's images in one pass, for the viewer to read from stdin. A pipeline for
+# each file, with an argument list that grew by one each time, took minutes in a directory of
+# 20000 files.
+# shortcut: a name with a newline in it counts as two files, list with NULs if such names matter
+list=$(find -L . -maxdepth 1 ! -name '.*' -type f |
+    grep -iE '\.(jpg|jpeg|jpe|png|gif|webp|heic|heif|bmp|tif|tiff|ico|icns|jp2|avif|psd|tga|exr|pbm|pgm|ppm|sgi|dds|cr2|nef)$' |
+    sort)
+idx=$(printf '%s\n' "$list" | grep -nxF -- "./$target" | cut -d: -f1)
 
-[ "$idx" -eq 0 ] && exec nsxiv-mac -- "$target"
-exec nsxiv-mac -n "$idx" -- "$@"
+[ -n "$idx" ] || exec nsxiv-mac -- "$target"
+# The list goes in a file that is gone by the time the viewer reads it as its stdin. A pipe would
+# need a second process to fill it, one that waits beside the viewer or that it never reaps.
+# Without the whole list, as on a full disk, the image opens alone.
+tmp=$(mktemp) || exec nsxiv-mac -- "$target"
+printf '%s\n' "$list" >"$tmp" && {
+    rm -f "$tmp"
+    exec nsxiv-mac -i -n "$idx" <&3 3<&-
+} 3<"$tmp"
+rm -f "$tmp"
+exec nsxiv-mac -- "$target"

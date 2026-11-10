@@ -35,15 +35,15 @@ struct GridLayout {
         return i < count ? i : nil
     }
 
+    // the item a step away, or i itself at an edge; down from above a short last row lands on the
+    // last item, as in nsxiv
     func neighbor(of i: Int, _ direction: Direction) -> Int {
-        let step: Int
         switch direction {
-        case .left: step = -1
-        case .right: step = 1
-        case .up: step = -columns
-        case .down: step = columns
+        case .left: return max(0, i - 1)
+        case .right: return min(count - 1, i + 1)
+        case .up: return i >= columns ? i - columns : i
+        case .down: return i / columns < (count - 1) / columns ? min(count - 1, i + columns) : i
         }
-        return max(0, min(count - 1, i + step))
     }
 
     mutating func reveal(_ i: Int) {

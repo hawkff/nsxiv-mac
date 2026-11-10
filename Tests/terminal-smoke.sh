@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs the Linux build in a pseudo-terminal with no display, as over SSH on a headless machine,
 # in mode $2. In "symbols", a terminal without images, chafa must draw the red first image as
-# red symbols, and a smaller terminal must move the status bar to its new last line. In "kitty"
+# red symbols, a smaller terminal must move the status bar to its new last line, and a
+# key-handler must have the terminal while it runs, to ask there and read the answer. In "kitty"
 # and "kitty-files", this script answers the viewer's queries as a terminal with kitty graphics
 # would, one that cannot read the viewer's files and one that can: the large red first image
 # must come at the terminal's pixels, inline as PNG or as raw RGB in a file; the small blue
@@ -11,8 +12,9 @@
 # In all three, the first image rewritten while the second shows must come back as it is now.
 # Then m marks the image, and SIGTERM must end the viewer as q does: the terminal comes back in
 # the mode it found, without images, before -o prints the marked file. In "kitty-budget", a
-# large terminal, the viewer starts on the second of three images, and must send only the third
-# ahead, as the first would push it out of what the terminal keeps. In "herdr", a herdr pane,
+# large terminal, the viewer starts on the second of three images, each of more pixels than the
+# main queue decodes ahead, and must send only the third ahead, as the first would push it out
+# of what the terminal keeps. In "herdr", a herdr pane,
 # which sends an image on to its client only once placed, the image sent ahead must get a hidden
 # placement of one cell in the status bar's last cell, and j must then only place it. In "sixel", a terminal with
 # sixels and no kitty graphics, the images must come from chafa as sixels of whole bands short
@@ -27,8 +29,10 @@ pics=$(mktemp -d)
 out=$pics/out
 keys=$pics/keys
 if [ "$mode" = kitty-budget ]; then
-    # 4000x1980 pixels, 23.8 MB as RGB: two such frames fit in the 56 MiB the viewer keeps, three do not
-    for color in 1-red 2-lime 3-blue; do magick -size 4000x1980 "xc:${color#*-}" "$pics/$color.png"; done
+    # images of 31.7 megapixels, which only the helper makes frames of ahead, shown at half their
+    # size: frames of 4000x1980 pixels, 23.8 MB as RGB, of which two fit in the 56 MiB the viewer
+    # keeps and three do not
+    for color in 1-red 2-lime 3-blue; do magick -size 8000x3960 "xc:${color#*-}" "$pics/$color.png"; done
     winsize=100,400,4000,2000 start='-n 2'
 else
     magick -size 2000x1160 xc:red "$pics/1-red.png"
@@ -36,6 +40,12 @@ else
     winsize=30,100,1000,600 start=
 fi
 mkfifo "$keys"
+# a key-handler that asks on the terminal first thing, waits for a job of its own, and notes the answer
+export XDG_CONFIG_HOME="$pics/config"
+handler=$XDG_CONFIG_HOME/nsxiv-mac/exec/key-handler
+mkdir -p "$(dirname "$handler")"
+printf '#!/bin/sh\nprintf "name? " >/dev/tty\nread -r name </dev/tty\ntrue & wait\necho "$name" >"$0.name"\n' >"$handler"
+chmod +x "$handler"
 unset DISPLAY WAYLAND_DISPLAY
 if [ "$mode" = sixel ]; then
     # chafa as the viewer finds it, noting each frame it made once it made it, as the file it read
@@ -186,6 +196,12 @@ if [ "$mode" = symbols ]; then
     printf j >&3
     stty -F "$(cat "$pics/tty")" cols 80 rows 20
     drawn -F "$(printf '\033[20;1H')" "a smaller terminal did not get the status bar on its last line"
+    printf '\030p' >&3 # C-x p
+    drawn -F 'name? ' "the key-handler did not ask on the terminal"
+    printf 'red\n' >&3
+    for _ in $(seq 100); do [ -s "$handler.name" ] && break; sleep 0.1; done
+    [ "$(cat "$handler.name" 2>/dev/null)" = red ] ||
+        fail "the key-handler read '$(cat "$handler.name" 2>/dev/null)' on the terminal, not the answer typed there"
 elif [ "$mode" = sixel ]; then
     drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask what the terminal shows"
     printf '\033[?62;4;22c' >&3 # foot's answer: sixels, and no kitty graphics
