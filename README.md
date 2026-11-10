@@ -20,13 +20,15 @@ shows the images in the terminal.
   later image fits inside it. With several monitors, GNOME may spread it onto the
   next one. `-g WxH` fixes the size instead
 - Thumbnail grid. On macOS QuickLook renders and caches the thumbnails and `-p`
-  bypasses that cache; on Linux they stay in memory for the session
+  bypasses that cache. On Linux the viewer keeps them under `~/.cache/nsxiv-mac`,
+  as nsxiv does, so a directory's grid fills at once the next time; `-p` writes
+  none there, and `-c` removes those of images that are gone
 - Plays animated GIF, APNG, and WebP; steps through single frames
 - Reloads the image when the file changes on disk
 - Marks for batch workflows; `-o` prints marked files on exit
 - Edit mode on macOS: annotate, censor, OCR (press `x`)
 - Shell scripting through a `key-handler`, same protocol as nsxiv
-- Slideshow
+- Slideshow; an animation plays through once before the next image
 - nsxiv keybindings and CLI flags
 - Opens JPEG, PNG, GIF, WebP, HEIC, AVIF, TIFF, and camera RAW through ImageIO on
   macOS; on Linux, the installed Imlib2 loaders decide the formats
@@ -77,20 +79,26 @@ and later also shows sixels where the terminal around it can. A terminal with
 sixels, such as foot, xterm, or Konsole, gets the image at full resolution from
 [chafa](https://hpjansson.org/chafa/) 1.14 or later, and other terminals get
 colored text symbols from it; install chafa for those (`apt install chafa`,
-`pacman -S chafa`). The keys stay the same, and `C-c` quits too. `C-m`
-arrives as `Return` and `C-[` as `Escape`, because terminals send the same
-bytes for them.
+`pacman -S chafa`). The keys stay the same, and `C-c` quits too.
+
+A terminal with the kitty keyboard protocol, such as kitty, foot, or Ghostty,
+reports each key press on its own, so every press counts however fast you type,
+and a held key moves one image for each frame drawn. Other terminals send a
+held key and fast presses as the same bytes: there, three or more of one key
+that arrive together count once. They also send the same bytes for `C-m` and
+`Return`, and for `C-[` and `Escape`, so those two bindings need the protocol.
 
 ## Usage
 
 ```sh
-nsxiv-mac [-bfiopqrtv] [-g WxH] [-n NUM] [-S DELAY] [-s MODE] [-z ZOOM] [--start-file FILE] FILE...
+nsxiv-mac [-bcfiopqrtv] [-g WxH] [-n NUM] [-S DELAY] [-s MODE] [-z ZOOM] [--start-file FILE] FILE...
 
 nsxiv-mac ~/Pictures                     # every image in a directory
 nsxiv-mac -r ~/Pictures                  # recurse into subdirectories
 nsxiv-mac --start-file a.jpg .           # every image here, starting at a.jpg
 fd -e jpg | nsxiv-mac -i                 # read the file list from stdin
 nsxiv-mac -o *.jpg > picked.txt          # mark with 'm', quit; marked paths print to stdout
+nsxiv-mac -c                             # Linux: drop cached thumbnails of images that are gone
 ```
 
 ## Keybindings
@@ -184,8 +192,9 @@ and the marked files (or the current file) arrive on stdin, one path per line.
 they use wl-copy or xclip, gio, and xdg-open.
 
 A letter or digit is its own name. Punctuation has its X name, such as `comma`
-for `,`. With Control held, the name has `C-` in front, as in `C-comma`.
-Control is the only modifier that reaches the handler.
+for `,`. Control puts `C-` in front, Alt `M-` and Shift `S-`, in that order, as
+in `C-M-S-Return`. Shift counts only where it leaves the key as it is: Shift and
+`j` arrive as `J`.
 
 The viewer waits until the handler ends. A handler can ask a question on the
 terminal the viewer runs in, or was started from, by reading `/dev/tty`. The
