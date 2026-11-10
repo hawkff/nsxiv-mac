@@ -179,6 +179,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, Vi
         }
     }
 
+    // drops the keys and clicks that came while a key-handler ran, as nsxiv does; they were for
+    // what the window showed before
+    func keyHandlerDidRun() {
+        NSApp.discardEvents(matching: [.keyDown, .leftMouseDown, .leftMouseUp, .leftMouseDragged, .rightMouseDown,
+                                       .rightMouseUp, .scrollWheel, .magnify], before: nil)
+    }
+
     func viewChanged() { canvas.needsDisplay = true }
     func gridChanged() { grid.needsDisplay = true }
     func layoutChanged() { updateLayout() }

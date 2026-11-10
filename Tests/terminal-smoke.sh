@@ -8,7 +8,8 @@
 # must come at the terminal's pixels, inline as PNG or as raw RGB in a file; the small blue
 # second one, shown at 100%, at its own pixels, which the terminal scales up, sent ahead while
 # the viewer waits; j and then k must only place them again, the image going off the screen
-# keeping its pixels in the terminal, and an image the terminal says it dropped must go again.
+# keeping its pixels in the terminal, an image the terminal says it dropped must go again, and
+# after the grid the terminal must still hold the image, which is then only placed.
 # In all three, the first image rewritten while the second shows must come back as it is now.
 # Then m marks the image, and SIGTERM must end the viewer as q does: the terminal comes back in
 # the mode it found, without images, before -o prints the marked file. In "kitty-budget", a
@@ -362,6 +363,15 @@ else
     printf w >&3
     for _ in $(seq 100); do [ "$(grep -a -o -F "$whole" "$out" | wc -l)" -gt "$placements" ] && break; sleep 0.1; done
     [ "$(grep -a -o -F "$whole" "$out" | wc -l)" -gt "$placements" ] || fail "w did not show the blue image whole again"
+    # to the grid, which goes as an image of its own, and back: the blue image is placed again
+    # under the number it had, which the viewer could not do had it let the terminal drop it
+    printf '\r' >&3
+    sends a=T 5 "Return did not send the grid"
+    placements=$(grep -a -o -F "$whole" "$out" | wc -l)
+    printf '\r' >&3
+    for _ in $(seq 100); do [ "$(grep -a -o -F "$whole" "$out" | wc -l)" -gt "$placements" ] && break; sleep 0.1; done
+    [ "$(grep -a -o -F "$whole" "$out" | wc -l)" -gt "$placements" ] ||
+        fail "back from the grid, the viewer did not place the blue image the terminal held"
 fi
 before="$(sent a=T) $(sent a=t) $(sent a=p) $(sixels)"
 printf m >&3

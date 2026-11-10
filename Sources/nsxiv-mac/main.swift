@@ -12,7 +12,7 @@ signal(SIGPIPE, SIG_IGN)
 if CommandLine.arguments.dropFirst().first == "--frame-ahead" { TerminalUI.runAheadHelper() }
 #endif
 
-let options = Options.parse(Array(CommandLine.arguments.dropFirst()))
+var options = Options.parse(Array(CommandLine.arguments.dropFirst()))
 
 var inputPaths = options.paths
 if options.readStdin {
@@ -26,7 +26,8 @@ if inputPaths.isEmpty {
     exit(2)
 }
 
-let files = FileList.build(paths: inputPaths, recursive: options.recursive, quiet: options.quiet)
+var files = FileList.build(paths: inputPaths, recursive: options.recursive, quiet: options.quiet)
+if let path = options.startFile { options.startAt = FileList.start(at: path, in: &files, quiet: options.quiet) }
 if files.isEmpty {
     warn("no images to display")
     exit(1)
