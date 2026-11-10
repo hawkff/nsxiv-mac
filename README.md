@@ -84,10 +84,11 @@ bytes for them.
 ## Usage
 
 ```sh
-nsxiv-mac [-bfiopqrtv] [-g WxH] [-n NUM] [-S DELAY] [-s MODE] [-z ZOOM] FILE...
+nsxiv-mac [-bfiopqrtv] [-g WxH] [-n NUM] [-S DELAY] [-s MODE] [-z ZOOM] [--start-file FILE] FILE...
 
 nsxiv-mac ~/Pictures                     # every image in a directory
 nsxiv-mac -r ~/Pictures                  # recurse into subdirectories
+nsxiv-mac --start-file a.jpg .           # every image here, starting at a.jpg
 fd -e jpg | nsxiv-mac -i                 # read the file list from stdin
 nsxiv-mac -o *.jpg > picked.txt          # mark with 'm', quit; marked paths print to stdout
 ```
@@ -177,20 +178,25 @@ never modifies the source file.
 ## key-handler
 
 Place an executable at `~/.config/nsxiv-mac/exec/key-handler`. After you press
-`C-x` in the viewer, the next key arrives as `$1` and the marked files (or the
-current file) arrive on stdin, one path per line. `etc/key-handler.example`
-ships clipboard, trash, and reveal actions; on Linux they use wl-copy or xclip,
-gio, and xdg-open.
+`C-x` in the viewer, the next key arrives as `$1`, by the name nsxiv gives it,
+and the marked files (or the current file) arrive on stdin, one path per line.
+`etc/key-handler.example` ships clipboard, trash, and reveal actions; on Linux
+they use wl-copy or xclip, gio, and xdg-open.
+
+A letter or digit is its own name. Punctuation has its X name, such as `comma`
+for `,`. With Control held, the name has `C-` in front, as in `C-comma`.
+Control is the only modifier that reaches the handler.
 
 The viewer waits until the handler ends. A handler can ask a question on the
-terminal the viewer runs in, or was started from, by reading `/dev/tty`. On
-Linux, the viewer drops the keys and clicks made while the handler runs. After
-the handler, it reloads the files whose size or times changed.
+terminal the viewer runs in, or was started from, by reading `/dev/tty`. The
+viewer drops the keys and clicks made while the handler runs. After the
+handler, it reloads the files whose size or times changed.
 
 ## File manager integration
 
 `etc/nsxiv-rifle` opens a single image and lets you browse its whole
-directory, starting at that file. For yazi, register it as an opener:
+directory, starting at that file, through the viewer's `--start-file` option.
+For yazi, register it as an opener:
 
 ```toml
 [opener]
