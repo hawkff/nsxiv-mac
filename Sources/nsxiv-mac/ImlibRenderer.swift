@@ -21,6 +21,7 @@ final class ImlibRenderer {
 
     private var thumbs: [String: Imlib_Image] = [:]
     private var failedThumbs: Set<String> = []
+    private var remadeThumbs: Set<String> = [] // made of the image anew, whatever the cache on disk holds
     private var thumbnailPending = false
 
     // the bar font fontconfig picks, loaded once for each pixel size
@@ -252,6 +253,7 @@ final class ImlibRenderer {
         imlib_set_cache_size(cacheSize)
         for entry in entries {
             failedThumbs.remove(entry.path)
+            remadeThumbs.insert(entry.path)
             if let thumb = thumbs.removeValue(forKey: entry.path) {
                 imlib_context_set_image(thumb)
                 imlib_free_image()
@@ -269,7 +271,8 @@ final class ImlibRenderer {
                   let path = viewer.grid.visible.lazy.map({ self.viewer.files[$0].path })
                       .first(where: { self.thumbs[$0] == nil && !self.failedThumbs.contains($0) })
             else { return }
-            if let thumb = Self.makeThumbnail(path) {
+            if let thumb = Self.thumbnail(path, cache: Self.thumbnailCache, fresh: remadeThumbs.remove(path) != nil,
+                                          write: !viewer.options.privateMode) {
                 pruneThumbnails()
                 thumbs[path] = thumb
             } else {
@@ -277,6 +280,78 @@ final class ImlibRenderer {
             }
             onThumbnail()
             scheduleThumbnail() // the next one, without waiting for a frame that may come later
+        }
+    }
+
+    // Thumbnails stay on disk between runs, as in nsxiv: each at its image's own path under this
+    // directory, with the image's modification time, which tells that it still is the image's.
+    // shortcut: on a filesystem that keeps times coarser than the image's, no thumbnail has the
+    // image's time, and each is made anew; compare at the cache's precision if such a cache matters
+    static let thumbnailCache: String = {
+        let home = ProcessInfo.processInfo.environment["XDG_CACHE_HOME"].flatMap { $0.hasPrefix("/") ? $0 : nil }
+        return (home ?? NSHomeDirectory() + "/.cache") + "/" + Config.appName
+    }()
+
+    // The thumbnail of the image at path: the one in cache while it has the image's time, else
+    // one made of the image, which goes there if write, as without -p. A fresh one is made of the
+    // image whatever the cache holds. An image inside the cache gets no thumbnail there.
+    static func thumbnail(_ path: String, cache: String, fresh: Bool = false, write: Bool) -> Imlib_Image? {
+        var image = stat(), cached = stat()
+        let file = cache + path
+        let dated = path.hasPrefix("/") && !path.hasPrefix(cache + "/") && stat(path, &image) == 0
+        if dated, !fresh, isOwn(cache), stat(file, &cached) == 0, cached.st_mtim.tv_sec == image.st_mtim.tv_sec,
+           cached.st_mtim.tv_nsec == image.st_mtim.tv_nsec,
+           let thumb = imlib_load_image_immediately_without_cache(file) { return thumb }
+        guard let thumb = makeThumbnail(path) else { return nil }
+        guard dated, write else { return thumb }
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: cache, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard isOwn(cache) else { return thumb }
+        let directory = URL(fileURLWithPath: file, isDirectory: false).deletingLastPathComponent().path
+        try? fm.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        imlib_context_set_image(thumb)
+        if imlib_image_has_alpha() != 0 {
+            imlib_image_set_format("png")
+        } else {
+            imlib_image_set_format("jpg")
+            imlib_image_attach_data_value("quality", nil, 90, nil)
+        }
+        // Under its name only once it is whole and has the image's time, so another viewer reads the
+        // thumbnail from before or this one, and never a part: until then under a name of its own
+        // beside it, short enough for a thumbnail of the longest name. -c clears what a viewer that
+        // was killed left unfinished.
+        var name = Array("\(directory)/.XXXXXX".utf8CString)
+        let made = mkstemp(&name)
+        guard made >= 0 else { return thumb }
+        close(made)
+        let unfinished = String(cString: name)
+        var failed: Int32 = 0
+        imlib_save_image_with_errno_return(unfinished, &failed)
+        let times = [image.st_atim, image.st_mtim]
+        if failed != 0 || utimensat(AT_FDCWD, unfinished, times, 0) != 0 || rename(unfinished, file) != 0 {
+            unlink(unfinished)
+        }
+        return thumb
+    }
+
+    // The cache is the user's alone, so a thumbnail is no more open than its image, and none comes
+    // from anyone else: a directory of the user's that others cannot enter, closed to them where
+    // they could. One that others could write to is not used, as what it holds may be theirs, and
+    // neither is one behind a link that another user made, as in a shared directory.
+    private static func isOwn(_ cache: String) -> Bool {
+        var entry = stat(), root = stat()
+        return lstat(cache, &entry) == 0 && entry.st_uid == getuid()
+            && stat(cache, &root) == 0 && root.st_mode & S_IFMT == S_IFDIR && root.st_uid == getuid()
+            && root.st_mode & 0o022 == 0 && (root.st_mode & 0o077 == 0 || chmod(cache, 0o700) == 0)
+    }
+
+    // -c: the thumbnails whose images are gone leave the cache, as in nsxiv
+    static func cleanThumbnailCache(_ cache: String = thumbnailCache) {
+        guard isOwn(cache), let files = FileManager.default.enumerator(atPath: cache) else { return }
+        for case let name as String in files {
+            var info = stat()
+            let file = cache + "/" + name
+            if lstat(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG, access("/" + name, F_OK) != 0 { unlink(file) }
         }
     }
 

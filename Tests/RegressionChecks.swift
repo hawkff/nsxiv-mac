@@ -5,14 +5,15 @@ import CX11
 import Foundation
 #endif
 
-// stands in for a window: loads every file as a 320x160 still
+// stands in for a window: loads every file as a 320x160 image, a still unless delays has more frames
 final class FakeUI: ViewerUI {
     var beeps = 0
     var loads = 0
     var fails = false // as with a file that is no image
+    var delays = [0.1]
     func loadImage(_ url: URL) -> ImageInfo? {
         loads += 1
-        return fails ? nil : ImageInfo(size: CGSize(width: 320, height: 160), delays: [0.1])
+        return fails ? nil : ImageInfo(size: CGSize(width: 320, height: 160), delays: delays)
     }
     func imageChanged() {}
     func viewChanged() {}
@@ -75,6 +76,17 @@ struct RegressionChecks {
         var deep = FileList.build(paths: [directory.path], recursive: true, quiet: true)
         assert(FileList.start(at: twin.appendingPathComponent("frame.png").path, in: &deep, quiet: true) == 4,
                "the viewer starts at the named entry, not at another link to its file: \(deep.map(\.path))")
+
+        // numbers order by value and letters without their case, whatever order the rough key gives first
+        let ordered = directory.appendingPathComponent("ordered")
+        try fm.createDirectory(at: ordered, withIntermediateDirectories: false)
+        for name in ["p10.png", "p9.png", "P1.png", "b2.png", "B10.png"] { try png.write(to: ordered.appendingPathComponent(name)) }
+        let numbered = FileList.build(paths: [ordered.path], recursive: false, quiet: true).map(\.url.lastPathComponent)
+        assert(numbered == ["b2.png", "B10.png", "P1.png", "p9.png", "p10.png"], "a directory lists in natural order: \(numbered)")
+        func rough(_ a: String, before b: String) -> Bool { FileList.roughKey(a).lexicographicallyPrecedes(FileList.roughKey(b)) }
+        assert(rough("a/IMG_0012.jpg", before: "a/img_100.JPG") && rough("x9", before: "x10") && !rough("x10", before: "x9")
+               && rough("x" + String(repeating: "9", count: 300), before: "y"),
+               "the rough key orders numbers by value and letters without their case")
 
         let ranged = Options.parse(["-g", "640x4.796e+2", "-S", "0.5", "-z", "150", "--start-file", "b.png", "a.png"])
         assert(ranged.geometry == CGSize(width: 640, height: 480) && ranged.slideshow == 0.5 && ranged.zoom == 1.5
@@ -188,6 +200,35 @@ struct RegressionChecks {
         assert((0x20...0x7e).map { String(UnicodeScalar(UInt8($0))) }
             .allSatisfy { $0.first!.isLetter || $0.first!.isNumber || Viewer.keysymNames[$0] != nil },
             "each key that types a sign has nsxiv's name for a key-handler")
+
+        // m marks the last image and stays there, with nothing after it to go to
+        let beeps = ui.beeps
+        press("G")
+        press("m")
+        assert(viewer.current == 3 && viewer.files[3].marked && ui.beeps == beeps, "m on the last image marks it without a beep")
+
+        // A slideshow counts an image's second from when a key went to it. An animation of three
+        // frames outlasts that second: the slideshow waits for the frame after its last, and a still
+        // goes on at once.
+        startOptions.zoom = nil
+        startOptions.slideshow = 1
+        let show = Viewer(options: startOptions, files: files)
+        show.ui = ui
+        show.start()
+        ui.delays = [0.5, 0.5, 0.5]
+        let before = DispatchTime.now()
+        _ = show.handle(Keystroke(key: "j"))
+        let after = DispatchTime.now()
+        assert(show.slideshowDue.map { before + 1 <= $0 && $0 <= after + 1 } == true, "a slideshow's delay starts with the image a key went to")
+        show.slideshowFired()
+        show.advanceFrame()
+        show.advanceFrame()
+        assert(show.current == 1 && show.frameIndex == 2, "a slideshow whose delay is over waits for an animation's first run")
+        ui.delays = [0.1]
+        show.advanceFrame()
+        assert(show.current == 2, "the end of an animation's first run brings a slideshow's next image")
+        show.slideshowFired()
+        assert(show.current == 3, "a slideshow leaves a still when its delay is over")
     }
 
     // A key-handler gets the marked files on its stdin and the key by nsxiv's name. One that only
@@ -232,6 +273,10 @@ struct RegressionChecks {
         _ = viewer.handle(Keystroke(key: ",", ctrl: true))
         let named = try String(contentsOfFile: handler.path + ".key", encoding: .utf8)
         assert(named == "C-comma\n", "a key-handler gets nsxiv's name for the key: \(named)")
+        _ = viewer.handle(Keystroke(key: "x", ctrl: true))
+        _ = viewer.handle(Keystroke(key: "Return", ctrl: true, alt: true, shift: true))
+        let modified = try String(contentsOfFile: handler.path + ".key", encoding: .utf8)
+        assert(modified == "C-M-S-Return\n", "a key-handler gets Control, Alt and Shift as nsxiv names them: \(modified)")
     }
 
     #if os(macOS)
@@ -252,6 +297,17 @@ struct RegressionChecks {
         let turnedFlipped = AppController.transform(strip.makeImage()!, rotation: 90, flipH: false, flipV: true)
         assert(turned.width == 1 && redOnTop(turned), "rotation must turn clockwise")
         assert(!redOnTop(turnedFlipped), "a flip must mirror the image as rotated on screen")
+
+        // Shift counts with a key it leaves as it is, Return or the space bar, not with J, which it made of j
+        func pressed(_ characters: String, _ held: NSEvent.ModifierFlags, code: UInt16) -> Keystroke? {
+            AppController.keystroke(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: held, timestamp: 0, windowNumber: 0, context: nil,
+                characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!)
+        }
+        let keys = [pressed("\r", [.shift, .option], code: 36), pressed("J", [.shift, .control], code: 38),
+                    pressed(" ", [.shift], code: 49)]
+        assert(keys == [Keystroke(key: "Return", alt: true, shift: true), Keystroke(key: "J", ctrl: true),
+                        Keystroke(key: " ", shift: true)], "a key names the modifiers that did not make it: \(keys)")
 
         let app = NSApplication.shared
         let geometries: [CGSize?] = [nil, CGSize(width: 640, height: 480)]
@@ -325,7 +381,7 @@ struct RegressionChecks {
         let named: [Keystroke?] = [
             Keystroke(key: "j"), Keystroke(key: "Up"), Keystroke(key: "Left", ctrl: true), Keystroke(key: "x", ctrl: true),
             Keystroke(key: "Return"), Keystroke(key: "BackSpace"), Keystroke(key: "Delete"), Keystroke(key: "F1"),
-            Keystroke(key: " ", ctrl: true), nil, Keystroke(key: "j"), // Alt-j is j, as on X11
+            Keystroke(key: " ", ctrl: true), nil, Keystroke(key: "j", alt: true), // Alt and j
         ]
         assert(typed.keys == named && typed.rest.isEmpty, "terminal bytes arrive as the keys X11 names: \(typed)")
         // a sequence another escape cuts short is one key without a name, so its end is no D;
@@ -349,8 +405,41 @@ struct RegressionChecks {
         let halfReply = TerminalUI.keys(in: Array("\u{1b}_".utf8))
         assert(halfReply.keys.isEmpty && halfReply.rest == [0x1b, 0x5f]
                && TerminalUI.keys(in: halfReply.rest + Array("Gi=77,p=1;ENOENT:No such image\u{1b}\\".utf8)).keys.isEmpty
-               && TerminalUI.keys(in: Array("\u{1b}_j".utf8)).keys == [Keystroke(key: "_"), Keystroke(key: "j")],
-               "Alt and _ is still _, as on X11, and a reply cut after ESC _ is no keys: \(halfReply)")
+               && TerminalUI.keys(in: Array("\u{1b}_j".utf8)).keys == [Keystroke(key: "_", alt: true), Keystroke(key: "j")],
+               "Alt and _ is still _, and a reply cut after ESC _ is no keys: \(halfReply)")
+
+        // The kitty keyboard protocol. Three taps of j in one burst, each a press with its text and a
+        // release, are three keys; a held k, its press and the repeats that piled up after it, is one,
+        // and so are the repeats of a later burst, before the release.
+        let esc = "\u{1b}["
+        let taps = TerminalUI.keys(in: Array(String(repeating: "\(esc)106;;106u\(esc)106;1:3u", count: 3).utf8))
+        let heldKey = TerminalUI.keys(in: Array("\(esc)107;1:1;107u\(esc)107;1:2;107u\(esc)107;1:2;107u".utf8))
+        let repeats = TerminalUI.keys(in: Array("\(esc)107;1:2;107u\(esc)107;1:2;107u\(esc)107;1:3u".utf8))
+        assert(taps.keys == [Keystroke?](repeating: Keystroke(key: "j"), count: 3) && taps.rest.isEmpty
+               && heldKey.keys == [Keystroke(key: "k")] && repeats.keys == [Keystroke(key: "k")],
+               "with the kitty keyboard protocol each press is a key, and a held key one a burst: \(taps) \(heldKey) \(repeats)")
+        // Shift and j by the text it types, and with Control by the key Shift makes of j; C-m, which is
+        // no Return; Escape, at once; Shift alone, which is no key, so it ends no C-x prefix; Return with
+        // Shift and Alt, which a key-handler gets; an arrow as herdr and as Alacritty send it, whose
+        // release is no second arrow; the brace AltGr and 7 type on a German keyboard; Shift and Tab;
+        // F1; the terminal's answer to the query for the protocol, which is no key; and letters in the
+        // case Shift and Caps Lock give them together: M for Control and m under Caps Lock, J for
+        // Control, Shift and j where the terminal names no key Shift makes, j for Shift and j under
+        // Caps Lock, where Shift does not count, as it changed the key; no key for Control, Shift
+        // and i on a Turkish keyboard, where the terminal names the dotted capital Shift makes of it;
+        // and the bracket for Control and the bracket, though a terminal names its brace without Shift
+        let reported = TerminalUI.keys(in: Array(("\(esc)106:74;2;74u\(esc)106:74;6u\(esc)109;5u\(esc)27u\(esc)57441;2u"
+            + "\(esc)13;4u\(esc)1;1:1A\(esc)1;1:3A\(esc)A\(esc)1;1:3A\(esc)55;;123u\(esc)9;2u\(esc)P\(esc)?0u"
+            + "\(esc)109;69u\(esc)106;6u\(esc)106:74;66;106u\(esc)105:304;6u\(esc)91:123;5u").utf8))
+        let reportedKeys: [Keystroke?] = [
+            Keystroke(key: "J"), Keystroke(key: "J", ctrl: true), Keystroke(key: "m", ctrl: true), Keystroke(key: "Escape"),
+            Keystroke(key: "Return", alt: true, shift: true), Keystroke(key: "Up"), Keystroke(key: "Up"),
+            Keystroke(key: "{"), Keystroke(key: "ISO_Left_Tab"), Keystroke(key: "F1"), nil,
+            Keystroke(key: "M", ctrl: true), Keystroke(key: "J", ctrl: true), Keystroke(key: "j"), nil,
+            Keystroke(key: "[", ctrl: true),
+        ]
+        assert(reported.keys == reportedKeys && reported.rest.isEmpty,
+               "the kitty keyboard protocol's keys arrive as the keys X11 names: \(reported)")
         // what the probe read: herdr's answers, a j typed meanwhile, and the start of a Left whose D
         // comes in the next read, which must not count alone, as D would drop the image
         let probed = TerminalUI.keys(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62;22cj\u{1b}[".utf8))
@@ -359,16 +448,24 @@ struct RegressionChecks {
         // herdr's answer, that of a terminal that cannot read the viewer's files, that of one
         // without kitty graphics, and an answer still on its way
         let herdr = TerminalUI.graphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}_Gi=32;OK\u{1b}\\\u{1b}[?62;22c".utf8))
+        // kitty's, with all of the keyboard protocol on, as its flags before the attributes say, foot's,
+        // with those and sixels, and that of a terminal that reports no key with text as a sequence
+        let kittyKeys = TerminalUI.graphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?31u\u{1b}[?62;22c".utf8))
+        let footKeys = TerminalUI.graphics(in: Array("\u{1b}[?31u\u{1b}[?62;4;22c".utf8))
+        let fewKeys = TerminalUI.graphics(in: Array("\u{1b}[?7u\u{1b}[?62;22c".utf8))
         let remote = TerminalUI.graphics(
             in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}_Gi=32;EBADF:Failed to read image file\u{1b}\\\u{1b}[?62;22c".utf8))
         let none = TerminalUI.graphics(in: Array("\u{1b}[?1;2c".utf8))
         // foot's attributes, and a VT132's, whose 4 is its class rather than sixels
         let foot = TerminalUI.graphics(in: Array("\u{1b}[?62;4;22c".utf8))
         let vt132 = TerminalUI.graphics(in: Array("\u{1b}[?4;2c".utf8))
-        assert(herdr! == (true, true, false) && remote! == (true, false, false) && none! == (false, false, false)
-               && foot! == (false, false, true) && vt132! == (false, false, false)
-               && TerminalUI.graphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62".utf8)) == nil,
-               "the probe tells kitty graphics, frames in files and sixels from their absence, once the device attributes came")
+        assert(herdr! == (true, true, false, false) && remote! == (true, false, false, false)
+               && none! == (false, false, false, false) && foot! == (false, false, true, false)
+               && vt132! == (false, false, false, false) && kittyKeys! == (true, false, false, true)
+               && footKeys! == (false, false, true, true) && fewKeys! == (false, false, false, false)
+               && TerminalUI.graphics(in: Array("\u{1b}_Gi=31;OK\u{1b}\\\u{1b}[?62".utf8)) == nil
+               && TerminalUI.graphics(in: Array("\u{1b}[?31u\u{1b}[?62".utf8)) == nil,
+               "the probe tells kitty graphics, frames in files, sixels and the whole keyboard protocol from their absence, once the device attributes came")
         assert(TerminalUI.tmuxSupport("on|1|1|bpaste,clipboard,sixel,sync|xterm-kitty\n") == (true, true)
                && TerminalUI.tmuxSupport("all|1|1|RGB|xterm-ghostty\n") == (true, false)
                && TerminalUI.tmuxSupport("on|0|1|sixel|foot\n") == (false, true)
@@ -392,6 +489,14 @@ struct RegressionChecks {
                && TerminalUI.crop(filling, canvas: whole.viewSize, cell: (10, 20), scale: 1, columns: 100, rows: 29) == nil
                && TerminalUI.crop(past, canvas: whole.viewSize, cell: (10, 20), scale: 1, columns: 100, rows: 29) == nil,
                "an image shown whole goes alone, in a box of whole cells: \(String(describing: cropped))")
+        // a zoom set by hand carries over to the next image, so it is among what decides whether that
+        // image's frame has room; the zoom a fit mode gave the image that shows is not
+        var byHand = whole, further = whole
+        byHand.setZoom(0.5)
+        further.setZoom(0.25)
+        assert(TerminalUI.frameSettings(byHand) != TerminalUI.frameSettings(further)
+               && TerminalUI.frameSettings(whole) == TerminalUI.frameSettings(filling),
+               "what decides the next image's frame: \(TerminalUI.frameSettings(byHand)) \(TerminalUI.frameSettings(whole))")
         assert(TerminalUI.passthrough("\u{1b}_Ga=q\u{1b}\\") == "\u{1b}Ptmux;\u{1b}\u{1b}_Ga=q\u{1b}\u{1b}\\\u{1b}\\",
                "a command for the terminal around tmux goes in tmux's passthrough, its escapes doubled")
         // two rows of three cells of an image whose id has the high byte 3: the first cell of each
@@ -538,6 +643,87 @@ struct RegressionChecks {
         _ = loadedWidth(other)
         _ = try picture("cached.png", width: 70, time: later.addingTimeInterval(60))
         assert(loadedWidth(cached) == 70, "a revisit reads a file whose time changed")
+
+        // A thumbnail goes to the cache at its image's path, with the image's time, and comes from
+        // there while the image keeps that time: a 640x400 image rewritten as 100x100 at the same
+        // time keeps its thumbnail of 320 pixels. A fresh thumbnail, and an image with another time,
+        // take the image again. Without writing, the cache gets none, and one whose image is gone
+        // leaves it.
+        let cache = directory.appendingPathComponent("cache").path
+        let wide = directory.appendingPathComponent("wide.png").path, unkept = directory.appendingPathComponent("unkept.png").path
+        func opaque(_ path: String, _ width: Int32, _ height: Int32, time: Date) throws {
+            imlib_context_set_image(imlib_create_image(width, height)!)
+            imlib_image_set_has_alpha(0)
+            imlib_image_set_format("png")
+            imlib_save_image(path)
+            imlib_free_image()
+            try fm.setAttributes([.modificationDate: time], ofItemAtPath: path)
+        }
+        func thumbnailWidth(_ path: String, fresh: Bool = false, write: Bool = true) -> Int32 {
+            guard let thumb = ImlibRenderer.thumbnail(path, cache: cache, fresh: fresh, write: write) else { return 0 }
+            imlib_context_set_image(thumb)
+            defer { imlib_free_image() }
+            return imlib_image_get_width()
+        }
+        try opaque(wide, 640, 400, time: later)
+        try opaque(unkept, 640, 400, time: later)
+        // a cache that others could read is closed to them before a thumbnail goes there
+        try fm.createDirectory(atPath: cache, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])
+        let firstWidth = thumbnailWidth(wide)
+        let keptThere = try fm.contentsOfDirectory(atPath: cache + directory.path)
+        let cacheMode = (try fm.attributesOfItem(atPath: cache)[.posixPermissions] as? NSNumber)?.intValue
+        assert(firstWidth == 320 && FileList.stamp(cache + wide)?.prefix(2) == FileList.stamp(wide)?.prefix(2)
+               && keptThere == ["wide.png"] && cacheMode == 0o700,
+               "a thumbnail goes to a cache of the user's alone, whole and with its image's time: \(keptThere) \(String(describing: cacheMode))")
+        // and none to one that others could write to, whose links may lead anywhere
+        let openCache = directory.appendingPathComponent("open-cache").path
+        try fm.createDirectory(atPath: openCache, withIntermediateDirectories: false)
+        chmod(openCache, 0o777)
+        if let unused = ImlibRenderer.thumbnail(wide, cache: openCache, write: true) {
+            imlib_context_set_image(unused)
+            imlib_free_image()
+        }
+        assert((try? fm.contentsOfDirectory(atPath: openCache)) == [], "a cache that others could write to gets no thumbnail")
+        // and -c leaves such a directory as it is, though it holds a thumbnail whose image is gone
+        let stray = openCache + directory.path + "/gone.png"
+        try fm.createDirectory(atPath: openCache + directory.path, withIntermediateDirectories: true)
+        try Data().write(to: URL(fileURLWithPath: stray))
+        ImlibRenderer.cleanThumbnailCache(openCache)
+        assert(fm.fileExists(atPath: stray), "-c takes nothing from a directory that is no cache of the user's")
+        // nor through a link another user made to a directory of the user's, which stays as it is;
+        // only root, as in a container, can give the link to another user
+        let theirLink = directory.appendingPathComponent("their-link").path
+        let linked = directory.appendingPathComponent("linked").path
+        try fm.createDirectory(atPath: linked, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])
+        if getuid() == 0 {
+            guard symlink(linked, theirLink) == 0, lchown(theirLink, 65534, 65534) == 0 else {
+                fatalError("root could not give a link to another user")
+            }
+            if let unused = ImlibRenderer.thumbnail(wide, cache: theirLink, write: true) {
+                imlib_context_set_image(unused)
+                imlib_free_image()
+            }
+            let linkedMode = (try fm.attributesOfItem(atPath: linked)[.posixPermissions] as? NSNumber)?.intValue
+            assert((try? fm.contentsOfDirectory(atPath: linked)) == [] && linkedMode == 0o755,
+                   "a cache behind another user's link gets no thumbnail and keeps its mode: \(String(describing: linkedMode))")
+        }
+        try opaque(wide, 100, 100, time: later)
+        assert(thumbnailWidth(wide) == 320, "an image that keeps its time has its thumbnail from the cache")
+        assert(thumbnailWidth(wide, fresh: true) == 100 && thumbnailWidth(wide) == 100, "a fresh thumbnail is made of the image")
+        try opaque(wide, 640, 400, time: later.addingTimeInterval(60))
+        assert(thumbnailWidth(wide) == 320, "an image with another time gets a new thumbnail")
+        assert(thumbnailWidth(unkept, write: false) == 320 && !fm.fileExists(atPath: cache + unkept),
+               "without writing, a thumbnail stays out of the cache")
+        assert(thumbnailWidth(unkept) == 320 && fm.fileExists(atPath: cache + unkept), "a thumbnail goes to the cache")
+        // also that of an image whose name leaves a filesystem of 255 bytes a name no room to grow
+        let longest = directory.appendingPathComponent(String(repeating: "n", count: 251) + ".png").path
+        try opaque(longest, 640, 400, time: later)
+        assert(thumbnailWidth(longest) == 320 && fm.fileExists(atPath: cache + longest),
+               "an image with the longest name has its thumbnail kept")
+        try fm.removeItem(atPath: wide)
+        ImlibRenderer.cleanThumbnailCache(cache)
+        assert(!fm.fileExists(atPath: cache + wide) && fm.fileExists(atPath: cache + unkept),
+               "the cache loses the thumbnails of images that are gone, and no others")
 
         let patch = directory.appendingPathComponent("patch.gif")
         try Data(gif).write(to: patch)

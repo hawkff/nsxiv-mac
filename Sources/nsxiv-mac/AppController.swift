@@ -301,13 +301,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate, Vi
         }
         // cmd shortcuts pass through to the menu (cmd-q etc.); they and keys without a name, as Tab
         // or F1, still end a C-x prefix
-        guard !event.modifierFlags.contains(.command), let key = Self.keyName(event) else {
+        guard !event.modifierFlags.contains(.command), let key = Self.keystroke(event) else {
             viewer.endPrefix()
             return false
         }
         // a held key outruns large decodes; a repeat that waited in the queue is dropped
         if event.isARepeat, ProcessInfo.processInfo.systemUptime - event.timestamp > 0.1 { return true }
-        return viewer.handle(Keystroke(key: key, ctrl: event.modifierFlags.contains(.control)))
+        return viewer.handle(key)
+    }
+
+    // the key with Control, with Option as Alt, and with Shift where the key is the same without
+    // it: charactersIgnoringModifiers keeps what Shift makes of a key, J of j
+    static func keystroke(_ event: NSEvent) -> Keystroke? {
+        guard let key = keyName(event) else { return nil }
+        let held = event.modifierFlags
+        let shift = held.contains(.shift) && (key.count > 1 || event.characters(byApplyingModifiers: []) == key)
+        return Keystroke(key: key, ctrl: held.contains(.control), alt: held.contains(.option), shift: shift)
     }
 
     // the typed text, or nsxiv's name for a key without one

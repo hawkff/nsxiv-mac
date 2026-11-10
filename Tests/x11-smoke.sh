@@ -1,8 +1,9 @@
 #!/bin/sh
 # Drives the Linux build under Xvfb: still, turned, alpha, animated and long-named
-# images, the grid, the key-handler, then -o with two marks. The handler waits for a job of
-# its own, which a shell started with SIGCHLD blocked never sees end, and a mark typed while
-# a slow handler runs must not count. First, an option whose argument is out of range must
+# images, the grid, whose thumbnails must stay on disk, the key-handler, then -o with two marks.
+# The handler waits for a job of its own, which a shell started with SIGCHLD blocked never sees
+# end, a mark typed while a slow handler runs must not count, and Alt, Shift and Return must
+# reach it as M-S-Return. First, an option whose argument is out of range must
 # end the viewer with a message and status 2. Screenshots land in $2.
 set -eu
 bin=$1
@@ -14,7 +15,7 @@ magick -size 200x200 xc:none -fill green -draw 'circle 100,100 100,20' "$pics/2-
 magick -delay 20 -size 120x80 xc:red xc:lime xc:blue -loop 0 "$pics/3-animated.gif"
 magick -size 300x300 plasma: "$pics/4-a-name-long-enough-to-lose-its-start-in-the-status-bar.jpg"
 
-export XDG_CONFIG_HOME="$pics/config"
+export XDG_CONFIG_HOME="$pics/config" XDG_CACHE_HOME="$pics/cache"
 handler="$XDG_CONFIG_HOME/nsxiv-mac/exec/key-handler"
 mkdir -p "$(dirname "$handler")"
 # for the key s, the handler runs until the test takes its .waiting file away
@@ -62,6 +63,7 @@ shot 6-long-name
 xdotool key g m m Return
 sleep 2
 shot 7-grid
+[ -s "$XDG_CACHE_HOME/nsxiv-mac$pics/1-gradient.png" ] || { echo "the grid left no thumbnail in the cache" >&2; exit 1; }
 xdotool key ctrl+x s
 for _ in $(seq 100); do [ -e "$handler.waiting" ] && break; sleep 0.1; done
 xdotool key m # while the handler runs: dropped, as in nsxiv
@@ -69,6 +71,10 @@ sleep 0.5
 rm "$handler.waiting"
 for _ in $(seq 100); do grep -q 'key s' "$handler.ran" 2>/dev/null && break; sleep 0.1; done
 sleep 0.5
+xdotool key ctrl+x alt+shift+Return
+for _ in $(seq 100); do grep -q 'key M-S-Return' "$handler.ran" 2>/dev/null && break; sleep 0.1; done
+grep -q 'key M-S-Return' "$handler.ran" ||
+    { echo "Alt, Shift and Return reached the key-handler as: $(head -1 "$handler.ran")" >&2; exit 1; }
 xdotool key ctrl+x c
 sleep 1
 xdotool key q

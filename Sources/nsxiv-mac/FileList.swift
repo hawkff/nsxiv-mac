@@ -50,11 +50,36 @@ enum FileList {
                 else { return nil }
                 return url.path
             } ?? []
-        // Sorted as plain strings first, which is cheap and, for names whose numbers have one width,
-        // already the order wanted, so the collator has little left to do: 20000 such names sort
-        // in a fourteenth of the time, and names of other kinds in about half.
-        return paths.sorted().sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        // Sorted by a rough key first, which is cheap and for most names already the order wanted,
+        // so the collator, which decides the order, has little left to do.
+        return paths.map { (key: roughKey($0), path: $0) }.sorted { $0.key.lexicographicallyPrecedes($1.key) }
+            .map(\.path).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
             .map { FileEntry(path: $0) }
+    }
+
+    // Bytes whose plain order is close to the collator's for path: letters in one case, and each
+    // number without its leading zeros, after a byte that counts its digits, so that 9 comes
+    // before 10.
+    static func roughKey(_ path: String) -> [UInt8] {
+        var key: [UInt8] = []
+        var count = -1 // where in key the number being read has its count; none between numbers
+        for byte in path.utf8 {
+            guard (0x30...0x39).contains(byte) else {
+                count = -1
+                key.append((0x41...0x5a).contains(byte) ? byte | 0x20 : byte)
+                continue
+            }
+            if count < 0 {
+                count = key.count
+                key.append(0x30)
+            }
+            // past the digits one byte counts, the rest is left to the collator
+            if byte != 0x30 || key[count] > 0x30, key[count] < 0xff {
+                key[count] += 1
+                key.append(byte)
+            }
+        }
+        return key
     }
 
     // --start-file: the number in files of the file at path, where the viewer starts. Without it

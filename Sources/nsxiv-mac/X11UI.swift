@@ -127,7 +127,17 @@ final class X11UI: ViewerUI {
         var text = [CChar](repeating: 0, count: 8)
         XLookupString(&key, &text, Int32(text.count), &sym, nil)
         guard let name = keyName(forKeysym: sym) else { return }
-        _ = viewer.handle(Keystroke(key: name, ctrl: key.state & UInt32(ControlMask) != 0))
+        // Shift counts where the key is the same without it, as nsxiv tells
+        var shift = false
+        if key.state & UInt32(ShiftMask) != 0 {
+            var plain = key
+            var unshifted: KeySym = 0
+            plain.state &= ~UInt32(ShiftMask)
+            XLookupString(&plain, &text, Int32(text.count), &unshifted, nil)
+            shift = unshifted == sym
+        }
+        _ = viewer.handle(Keystroke(key: name, ctrl: key.state & UInt32(ControlMask) != 0,
+                                    alt: key.state & UInt32(Mod1Mask) != 0, shift: shift))
     }
 
     // A held key outruns large decodes. The presses of that key queued while the last one

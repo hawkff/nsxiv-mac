@@ -15,11 +15,14 @@
 # the mode it found, without images, before -o prints the marked file. In "kitty-budget", a
 # large terminal, the viewer starts on the second of three images, each of more pixels than the
 # main queue decodes ahead, and must send only the third ahead, as the first would push it out
-# of what the terminal keeps. In "herdr", a herdr pane,
+# of what the terminal keeps; its helper, having decoded the first once, must not decode it again
+# for each frame shown. In "herdr", a herdr pane,
 # which sends an image on to its client only once placed, the image sent ahead must get a hidden
 # placement of one cell in the status bar's last cell, and j must then only place it. In "sixel", a terminal with
-# sixels and no kitty graphics, the images must come from chafa as sixels of whole bands short
-# of the bar. In "tmux", the viewer runs in tmux with allow-passthrough, and this script is the
+# sixels and no kitty graphics, whose cells are not of the 10x20 pixels chafa takes where it
+# cannot tell, the images must come from chafa as sixels at the terminal's pixels, of whole bands
+# short of the bar, the second one ahead though it has more pixels than the main queue decodes ahead,
+# as the helper makes its frame. In "tmux", the viewer runs in tmux with allow-passthrough, and this script is the
 # terminal around tmux: the viewer must ask it through tmux, and show each image as placeholders
 # tmux draws, of a virtual placement it passes on.
 # shortcut: the tmux mode skips -o, which prints in a pane that closes with the viewer
@@ -37,12 +40,15 @@ if [ "$mode" = kitty-budget ]; then
     winsize=100,400,4000,2000 start='-n 2'
 else
     magick -size 2000x1160 xc:red "$pics/1-red.png"
-    magick -size 700x232 xc:blue "$pics/2-blue.png"
+    # for sixels, 25.2 megapixels, more than the main queue decodes ahead
+    if [ "$mode" = sixel ]; then blue=6000x4200; else blue=700x232; fi
+    magick -size "$blue" xc:blue "$pics/2-blue.png"
     winsize=30,100,1000,600 start=
+    [ "$mode" != sixel ] || winsize=30,100,900,540 # cells of 9x18 pixels
 fi
 mkfifo "$keys"
 # a key-handler that asks on the terminal first thing, waits for a job of its own, and notes the answer
-export XDG_CONFIG_HOME="$pics/config"
+export XDG_CONFIG_HOME="$pics/config" XDG_CACHE_HOME="$pics/cache"
 handler=$XDG_CONFIG_HOME/nsxiv-mac/exec/key-handler
 mkdir -p "$(dirname "$handler")"
 printf '#!/bin/sh\nprintf "name? " >/dev/tty\nread -r name </dev/tty\ntrue & wait\necho "$name" >"$0.name"\n' >"$handler"
@@ -128,8 +134,17 @@ sends() {
 }
 # the id of the last kitty command of kind $1
 last() { grep -a -o -E "$(printf '\033_G')$1,(U=1,)?i=[0-9]+" "$out" | tail -1 | sed 's/.*i=//'; }
+# the viewer's helper, which makes the frames that go ahead: its child with --frame-ahead
+find_helper() {
+    for p in /proc/[0-9]*; do
+        [ "$(sed 's/.*) //' "$p/stat" 2>/dev/null | cut -d' ' -f2)" = "$(cat "$pics/pid")" ] || continue
+        if tr '\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q -e '--frame-ahea[d]'; then echo "${p#/proc/}"; fi
+    done
+}
 # how many sixel images the viewer drew
 sixels() { grep -a -o -F "$(printf '\033P')" "$out" | wc -l; }
+# what the viewer wrote from the last sixel image on
+last_sixel() { awk 'BEGIN { RS = "\033P" } END { print }' "$out"; }
 # a pattern for placeholders tmux drew in the color of image $1: U+10EEEE in the foreground of
 # its low byte, perhaps after a move of the cursor
 placed() { printf '\033\\[38;5;%sm(\033\\[[0-9;]*H)?\364\216\273\256' "$(($1 & 255))"; }
@@ -206,15 +221,16 @@ if [ "$mode" = symbols ]; then
 elif [ "$mode" = sixel ]; then
     drawn -F "$(printf '\033_Gi=31,s=1,v=1,a=q')" "the viewer did not ask what the terminal shows"
     printf '\033[?62;4;22c' >&3 # foot's answer: sixels, and no kitty graphics
-    # 100 columns of 10 pixels, and 29 rows of 20 above the bar in whole bands of 6: 1000x576,
+    # 100 columns of 9 pixels, and 29 rows of 18 above the bar in whole bands of 6: 900x522,
     # in raster attributes after an introducer that differs between chafa versions
     for _ in $(seq 100); do [ "$(sixels)" -ge 1 ] && break; sleep 0.1; done
-    grep -a -q -F '"1;1;1000;576#' "$out" || fail "the viewer drew no sixel image of 1000x576 pixels, but
+    grep -a -q -F '"1;1;900;522#' "$out" || fail "the viewer drew no sixel image of 900x522 pixels, but
 $(grep -a -o -E '.{0,24}"1;1;[0-9]+;[0-9]+.{0,8}' "$out" | head -2 | od -c | head -6)"
     drawn -F 1-red.png "the status bar never named the first image"
     # chafa's colors, in percent, may be a step off
     drawn -E '#[0-9]+;2;(9[5-9]|100);[0-4];[0-4]([^0-9]|$)' "the first sixel image has no red"
-    # the next image, from chafa while the viewer waits, which j then only shows
+    # the next image, whose frame the helper makes, from chafa while the viewer waits, which j then
+    # only shows
     for _ in $(seq 100); do grep -q -e '-ahead$' "$pics/chafa-runs" 2>/dev/null && break; sleep 0.1; done
     grep -q -e '-ahead$' "$pics/chafa-runs" || fail "chafa made no frame of the next image ahead"
     sleep 0.3
@@ -225,11 +241,17 @@ $(grep -a -o -E '.{0,24}"1;1;[0-9]+;[0-9]+.{0,8}' "$out" | head -2 | od -c | hea
     printf k >&3
     drawn -E '#[0-9]+;2;[0-4];(9[5-9]|100);[0-4]([^0-9]|$)' "k drew the first image as it was before it changed"
     printf j >&3
-    for _ in $(seq 100); do [ "$(sixels)" -ge 4 ] && break; sleep 0.1; done
-    [ "$(sixels)" -eq 4 ] || fail "the viewer drew $(sixels) sixel images, not 4"
+    # red, blue, lime and blue again; before lime, the red frame the viewer still held shows where
+    # the frame came before the file's time was told
+    blue_sixel='#[0-9]+;2;[0-4];[0-4];(9[5-9]|100)([^0-9]|$)'
+    for _ in $(seq 100); do last_sixel | grep -a -q -E "$blue_sixel" && break; sleep 0.1; done
+    last_sixel | grep -a -q -E "$blue_sixel" || fail "j did not draw the blue image last"
+    case $(sixels) in 4 | 5) ;; *) fail "the viewer drew $(sixels) sixel images, not 4 or 5" ;; esac
     # each on a cleared screen, as its transparent pixels would let the image before show
-    [ "$(grep -a -o -F "$(printf '\033[2J\033P')" "$out" | wc -l)" -eq 4 ] || fail "a sixel image came without the screen cleared first"
-    # chafa ran for the red image, the blue one ahead, and the lime one: j showed blue's frame twice
+    [ "$(grep -a -o -F "$(printf '\033[2J\033P')" "$out" | wc -l)" -eq "$(sixels)" ] ||
+        fail "a sixel image came without the screen cleared first"
+    # chafa ran for the red image, the blue one ahead, and the lime one: the frames it had made
+    # showed again without it
     [ "$(wc -l <"$pics/chafa-runs") $(grep -c -e '-ahead$' "$pics/chafa-runs")" = "3 1" ] ||
         fail "chafa made $(wc -l <"$pics/chafa-runs") frames, not 3, one ahead: $(cat "$pics/chafa-runs")"
 elif [ "$mode" = herdr ]; then
@@ -291,9 +313,24 @@ else
         sleep 2
         [ "$(sent a=T) $(sent a=t)" = "1 1" ] ||
             fail "the viewer sent $(sent a=t) images ahead, of two neighbors that do not both fit beside the one shown"
+        # the helper decoded the first image once, to learn that its frame has no room; S shows the
+        # bar again, three times, for which the helper must not work again, by its ticks of CPU
+        helper=$(find_helper)
+        [ -n "$helper" ] || fail "no helper made the frame sent ahead"
+        worked() { sed 's/.*) //' "/proc/$helper/stat" | awk '{ print $12 + $13 }'; }
+        before=$(worked)
+        for _ in $(seq 20); do # until the helper is done with that image
+            sleep 0.5
+            [ "$(worked)" = "$before" ] && break
+            before=$(worked)
+        done
+        for _ in 1 2 3; do printf S >&3; sleep 0.5; done
+        sleep 1.5
+        [ "$(worked)" = "$before" ] ||
+            fail "for three frames shown, the helper worked $(($(worked) - before)) ticks of CPU on an image whose frame has no room"
         kill -TERM "$(cat "$pics/pid")"
         wait "$session" || fail "SIGTERM did not end the viewer cleanly"
-        echo "$mode: sent one image ahead, of two neighbors that do not both fit"
+        echo "$mode: sent one image ahead, of two neighbors that do not both fit, and decoded the other once"
         exit
     fi
     drawn -F "$(printf '\033_Ga=T,')" "the viewer sent no kitty image"
@@ -309,11 +346,7 @@ else
     if [ "$mode" = kitty-files ]; then
         # the viewer's helper, which made that frame, and the directory the frames go in, from the
         # file the probe named
-        helper=
-        for p in /proc/[0-9]*; do
-            [ "$(sed 's/.*) //' "$p/stat" 2>/dev/null | cut -d' ' -f2)" = "$(cat "$pics/pid")" ] || continue
-            if tr '\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q -e '--frame-ahea[d]'; then helper=${p#/proc/}; fi
-        done
+        helper=$(find_helper)
         [ -n "$helper" ] || fail "no helper made the frame sent ahead"
         files=$(dirname "$(grep -a -o "$(printf '\033')_Gi=32,[^;]*;[A-Za-z0-9+/=]*" "$out" | head -1 | sed 's/.*;//' | base64 -d)")
         [ -d "$files" ] || fail "the probe named no directory for frames: $files"
