@@ -13,6 +13,7 @@ struct Options {
     var outputMarked = false
     var quiet = false
     var privateMode = false
+    var cleanCache = false
     var startAt = 1
     var slideshow: TimeInterval?
     var zoom: CGFloat?
@@ -22,10 +23,11 @@ struct Options {
     var paths: [String] = []
 
     static let usage = """
-    usage: \(Config.appName) [-bfiopqrtv] [-g WxH] [-n NUM] [-S DELAY] [-s MODE] [-z ZOOM]
+    usage: \(Config.appName) [-bcfiopqrtv] [-g WxH] [-n NUM] [-S DELAY] [-s MODE] [-z ZOOM]
            [--start-file FILE] FILE...
 
       -b            do not show the status bar
+      -c            remove the cached thumbnails of images that are gone, and exit
       -f            start in fullscreen
       -g WxH        fixed window size instead of fitting the window to each image
       -i            read file paths from stdin
@@ -80,6 +82,7 @@ struct Options {
             case "-o", "--output": o.outputMarked = true
             case "-q", "--quiet": o.quiet = true
             case "-p", "--private": o.privateMode = true
+            case "-c", "--clean-cache": o.cleanCache = true
             case "-n", "--start-at":
                 let text = value(a)
                 guard let n = Int(text), n > 0 else { invalid(a, text) }

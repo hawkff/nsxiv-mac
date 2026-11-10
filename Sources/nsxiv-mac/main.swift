@@ -14,6 +14,14 @@ if CommandLine.arguments.dropFirst().first == "--frame-ahead" { TerminalUI.runAh
 
 var options = Options.parse(Array(CommandLine.arguments.dropFirst()))
 
+if options.cleanCache {
+    // on macOS the system keeps the thumbnails, and clears them itself
+    #if os(Linux)
+    ImlibRenderer.cleanThumbnailCache()
+    #endif
+    exit(0)
+}
+
 var inputPaths = options.paths
 if options.readStdin {
     while let line = readLine(strippingNewline: true) {

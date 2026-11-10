@@ -1,7 +1,8 @@
 #!/bin/sh
 # Drives the Linux build as a Wayland client of a headless sway at scale 1.5: still,
 # turned, alpha and animated images, fullscreen, the grid, the key-handler, then -o
-# with two marks. A mark typed while a slow handler runs must not count. Screenshots land in $2.
+# with two marks. A mark typed while a slow handler runs must not count, and Alt, Shift and
+# Return must reach the handler as M-S-Return. Screenshots land in $2.
 set -eu
 bin=$1
 shots=$2
@@ -12,7 +13,7 @@ magick -size 200x200 xc:none -fill green -draw 'circle 100,100 100,20' "$pics/2-
 magick -delay 20 -size 120x80 xc:red xc:lime xc:blue -loop 0 "$pics/3-animated.gif"
 magick -size 300x300 plasma: "$pics/4-a-name-long-enough-to-lose-its-start-in-the-status-bar.jpg"
 
-export XDG_CONFIG_HOME="$pics/config"
+export XDG_CONFIG_HOME="$pics/config" XDG_CACHE_HOME="$pics/cache"
 handler="$XDG_CONFIG_HOME/nsxiv-mac/exec/key-handler"
 mkdir -p "$(dirname "$handler")"
 # for the key s, the handler runs until the test takes its .waiting file away
@@ -116,6 +117,10 @@ sleep 0.5
 rm "$handler.waiting"
 for _ in $(seq 100); do grep -q 'key s' "$handler.ran" 2>/dev/null && break; sleep 0.1; done
 sleep 0.5
+key -M ctrl x -m ctrl -M alt -M shift -k Return -m shift -m alt
+for _ in $(seq 100); do grep -q 'key M-S-Return' "$handler.ran" 2>/dev/null && break; sleep 0.1; done
+grep -q 'key M-S-Return' "$handler.ran" ||
+    { echo "Alt, Shift and Return reached the key-handler as: $(head -1 "$handler.ran")" >&2; exit 1; }
 key -M ctrl x -m ctrl c
 sleep 1
 key q

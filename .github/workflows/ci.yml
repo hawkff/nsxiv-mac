@@ -48,7 +48,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends libx11-dev libimlib2-dev libfontconfig-dev \
             libwayland-dev libxkbcommon-dev pkg-config xvfb xauth xdotool imagemagick fonts-dejavu-core \
-            sway grim wtype jq weston mutter dbus-daemon labwc chafa tmux
+            sway grim wtype jq weston mutter dbus-daemon labwc chafa tmux foot
       - name: Build
         run: swift build -c release --static-swift-stdlib
       - name: Smoke test
@@ -102,6 +102,8 @@ jobs:
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac sixel
       - name: Run in tmux, in a terminal with kitty graphics around it
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac tmux
+      - name: Run in foot, a terminal with sixels and the kitty keyboard protocol
+        run: sh Tests/foot-smoke.sh .build/release/nsxiv-mac foot-shots
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -111,6 +113,7 @@ jobs:
             wayland-shots
             weston-shots
             stacking-shots
+            foot-shots
 
   arch:
     runs-on: ubuntu-24.04
@@ -126,7 +129,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed base-devel libx11 imlib2 fontconfig wayland libxkbcommon \
             libxml2-legacy ncurses sqlite ttf-dejavu sway niri grim wtype imagemagick mesa kwin wayfire \
-            jq river-classic cosmic-comp chafa tmux
+            jq river-classic cosmic-comp chafa tmux foot
           useradd -m tester # Wayfire refuses to run as root
           # the toolchain the AUR's swift-bin repackages, with ncurses under its Arch name; the
           # hash is of the tarball the Swift 6.x release key signed
@@ -167,6 +170,8 @@ jobs:
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac sixel
       - name: Run in the latest tmux, in a terminal with kitty graphics around it
         run: sh Tests/terminal-smoke.sh .build/release/nsxiv-mac tmux
+      - name: Run in the latest foot, with sixels from the latest chafa
+        run: sh Tests/foot-smoke.sh .build/release/nsxiv-mac foot-shots
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -175,6 +180,7 @@ jobs:
             niri-shots
             stacking-shots
             cosmic-shots
+            foot-shots
 
   hyprland:
     needs: linux

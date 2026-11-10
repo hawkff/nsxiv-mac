@@ -577,10 +577,15 @@ final class WaylandUI: ViewerUI {
     }
 
     private func deliver(_ code: UInt32) {
-        guard let keyState, let name = keyName(forKeysym: UInt(xkb_state_key_get_one_sym(keyState, code)))
+        guard let keyState, let keymap, let name = keyName(forKeysym: UInt(xkb_state_key_get_one_sym(keyState, code)))
         else { return }
-        let ctrl = xkb_state_mod_name_is_active(keyState, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0
-        _ = viewer.handle(Keystroke(key: name, ctrl: ctrl))
+        func held(_ modifier: String) -> Bool {
+            xkb_state_mod_name_is_active(keyState, modifier, XKB_STATE_MODS_EFFECTIVE) > 0
+        }
+        // Shift counts where the key's symbol does not take it, as with Return
+        let shift = held(XKB_MOD_NAME_SHIFT) && xkb_state_mod_index_is_consumed(
+            keyState, code, xkb_keymap_mod_get_index(keymap, XKB_MOD_NAME_SHIFT)) == 0
+        _ = viewer.handle(Keystroke(key: name, ctrl: held(XKB_MOD_NAME_CTRL), alt: held(XKB_MOD_NAME_ALT), shift: shift))
     }
 
     // Wayland leaves key repeat to the client

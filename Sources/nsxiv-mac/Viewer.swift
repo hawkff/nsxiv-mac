@@ -1,10 +1,14 @@
 import Foundation
 
 // A key as the bindings see it: the typed text ("j", "G", "?"), or nsxiv's X keysym
-// name for a key without text ("Return", "Left", "BackSpace").
+// name for a key without text ("Return", "Left", "BackSpace"). Alt, and Shift where it leaves
+// the key what it is, as with Return, change no binding: Alt and j is j. A key-handler gets them
+// in the key's name.
 struct Keystroke: Equatable {
     var key: String
     var ctrl = false
+    var alt = false
+    var shift = false
 }
 
 struct ImageInfo {
@@ -79,7 +83,10 @@ final class Viewer {
     private(set) var grid = GridLayout()
 
     private var animationTimer: DispatchWorkItem?
+    private var playedThrough = false // the animation, since its image loaded
     private var slideshowTimer: DispatchSourceTimer?
+    private(set) var slideshowDue: DispatchTime? // when a slideshow's delay is over
+    private var slideshowOverdue = false // that delay is over, with an animation yet to play through
     private var slideshowDelay: TimeInterval
     private var prefixExternal = false
     private var watcher: FileWatcher?
@@ -262,6 +269,7 @@ final class Viewer {
         flipH = false
         flipV = false
         frameIndex = 0
+        playedThrough = false
         if let entry = currentEntry {
             image = ui?.loadImage(entry.url)
             errorText = image == nil ? "could not load: \(entry.url.lastPathComponent)" : nil
@@ -275,6 +283,7 @@ final class Viewer {
         ui?.imageChanged()
         ui?.viewChanged()
         if image?.isAnimated == true { startAnimation() }
+        if slideshowTimer != nil { startSlideshow() } // each image gets its delay whole, as in nsxiv
         ui?.barChanged()
         // once the frame is out, as on a network share watching a file takes round trips; images
         // passed quickly share one watch
@@ -304,6 +313,7 @@ final class Viewer {
         let oldSize = viewport.imageSize
         image = ui?.loadImage(entry.url)
         frameIndex = 0
+        playedThrough = false
         errorText = image == nil ? "could not load: \(entry.url.lastPathComponent)" : nil
         // a fit mode fits a file whose size changed, say one a key-handler turned
         let size = displaySize ?? .zero
@@ -313,6 +323,7 @@ final class Viewer {
         ui?.viewChanged()
         ui?.fitWindow()
         if image?.isAnimated == true { startAnimation() }
+        if slideshowTimer != nil { startSlideshow() }
         ui?.barChanged()
     }
 
@@ -358,16 +369,26 @@ final class Viewer {
 
     private func scheduleNextFrame() {
         guard animationPlaying, let image else { return }
-        let next = DispatchWorkItem { [weak self] in
-            guard let self, let image = self.image else { return }
-            self.frameIndex = (self.frameIndex + 1) % image.frameCount
-            self.showFrame()
-            self.ui?.barChanged()
-            self.scheduleNextFrame()
-        }
+        let next = DispatchWorkItem { [weak self] in self?.advanceFrame() }
         animationTimer = next
         DispatchQueue.main.asyncAfter(deadline: .now() + image.delays[frameIndex % image.frameCount],
                                       execute: next)
+    }
+
+    // the animation's next frame, once the delay of the one that shows is over
+    func advanceFrame() {
+        guard let image else { return }
+        frameIndex = (frameIndex + 1) % image.frameCount
+        if frameIndex == 0 {
+            playedThrough = true
+            // a slideshow that waited for this moves on, and the next image has frames of its own
+            let shown = current
+            if slideshowOverdue { slideshowFired() }
+            if current != shown { return }
+        }
+        showFrame()
+        ui?.barChanged()
+        scheduleNextFrame()
     }
 
     private func stopAnimation() {
@@ -395,22 +416,34 @@ final class Viewer {
 
     // MARK: - slideshow
 
+    // The next image comes once the delay is over, counted from when the image loaded, whatever
+    // loaded it, and once an animation has played through, as in nsxiv, however long its frames
+    // took to draw. The timer repeats for a slideshow of one image, which loads none.
     private func startSlideshow() {
         slideshowTimer?.cancel()
+        slideshowOverdue = false
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + slideshowDelay, repeating: slideshowDelay)
-        timer.setEventHandler { [weak self] in
-            guard let self else { return }
-            self.setCurrent(self.current + 1 < self.files.count ? self.current + 1 : 0) // wraps, like nsxiv
-        }
+        let due = DispatchTime.now() + slideshowDelay
+        timer.schedule(deadline: due, repeating: slideshowDelay)
+        timer.setEventHandler { [weak self] in self?.slideshowFired() }
         timer.resume()
         slideshowTimer = timer
+        slideshowDue = due
         ui?.barChanged()
+    }
+
+    // a slideshow's delay is over: the next image, or an animation's first run to wait out, whose
+    // end then brings the next image
+    func slideshowFired() {
+        slideshowOverdue = animationPlaying && !playedThrough
+        if !slideshowOverdue { setCurrent(current + 1 < files.count ? current + 1 : 0) } // wraps, like nsxiv
     }
 
     private func stopSlideshow() {
         slideshowTimer?.cancel()
         slideshowTimer = nil
+        slideshowDue = nil
+        slideshowOverdue = false
         ui?.barChanged()
     }
 
@@ -643,8 +676,12 @@ final class Viewer {
     func handle(_ k: Keystroke) -> Bool {
         if prefixExternal {
             prefixExternal = false
-            // Escape aborts, as in nsxiv, whose name for the key the handler gets
-            if k.key != "Escape" { runKeyHandler(key: (k.ctrl ? "C-" : "") + (Self.keysymNames[k.key] ?? k.key)) }
+            // Escape aborts, as in nsxiv, whose name for the key the handler gets: C-M-S-Return with
+            // Control, Alt and Shift held
+            if k.key != "Escape" {
+                runKeyHandler(key: (k.ctrl ? "C-" : "") + (k.alt ? "M-" : "") + (k.shift ? "S-" : "")
+                    + (Self.keysymNames[k.key] ?? k.key))
+            }
             return true
         }
         if k.ctrl {
@@ -694,7 +731,7 @@ final class Viewer {
         case "D": removeFiles(at: [current])
         case "m":
             toggleMark(at: current)
-            if !thumbnailMode { navigate(1) }
+            if !thumbnailMode, current + 1 < files.count { navigate(1) } // the last image stays, without a beep
         case "M": markRange()
         case "N": navigateMarked(+1)
         case "P": navigateMarked(-1)
