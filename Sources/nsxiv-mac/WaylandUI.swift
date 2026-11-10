@@ -71,6 +71,7 @@ final class WaylandUI: ViewerUI {
     private var cursorName = "default"
     private var cursorShown = false // an enter or a new scale wants the cursor set again
     private var lastTitleClick: UInt32?
+    private var droppingInput = false // set while the keys and clicks of a key-handler's run come in
     private let sway = ProcessInfo.processInfo.environment["SWAYSOCK"] != nil
     // sessions spell these differently: Wayfire, wayfire, ubuntu:GNOME
     private let desktops = Set((ProcessInfo.processInfo.environment["XDG_CURRENT_DESKTOP"] ?? "").lowercased()
@@ -408,6 +409,17 @@ final class WaylandUI: ViewerUI {
         return false
     }
 
+    // Drops the keys and clicks that came while a key-handler ran, as nsxiv does; they were for
+    // what the window showed before. They are still on their way from the compositor, so input
+    // goes unheeded until the compositor answers a sync, which it does once all it sent before
+    // is in.
+    func keyHandlerDidRun() {
+        droppingInput = true
+        dragging = false // its release may be among them
+        wl_callback_add_listener(wl_display_sync(display), Self.syncListener, Unmanaged.passUnretained(self).toOpaque())
+        wl_display_flush(display)
+    }
+
     // MARK: - drawing
 
     private func setNeedsRedraw() {
@@ -559,6 +571,7 @@ final class WaylandUI: ViewerUI {
             if code == repeatingKey { stopRepeat() }
             return
         }
+        guard !droppingInput else { return }
         deliver(code)
         if let keymap, repeatRate > 0, xkb_keymap_key_repeats(keymap, code) != 0 { startRepeat(code) }
     }
@@ -698,6 +711,7 @@ final class WaylandUI: ViewerUI {
     }
 
     private func button(_ button: UInt32, pressed: Bool, time: UInt32, serial: UInt32) {
+        guard !droppingInput else { return }
         if pressed, decorationPressed(button, at: pointerAt, time: time, serial: serial) { return }
         let left = Self.leftButton, right = Self.rightButton
         let p = CGPoint(x: pointerAt.x, y: pointerAt.y - CGFloat(titleHeight)) // canvas coordinates
@@ -752,6 +766,7 @@ final class WaylandUI: ViewerUI {
     // one scroll gesture: a wheel zooms, as with a mouse on macOS; a touchpad pans
     private func axisFrame() {
         defer { scroll = (0, 0, 0, false) }
+        guard !droppingInput else { return }
         if viewer.thumbnailMode {
             if !scroll.smooth, scroll.steps != 0 {
                 viewer.scrollGrid(by: CGFloat(scroll.steps) * viewer.grid.cellSize / 3) // as on X11
@@ -920,7 +935,7 @@ final class WaylandUI: ViewerUI {
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return nil }
+        guard (try? process.runUnblocked()) != nil else { return nil }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         return process.terminationStatus == 0 ? data : nil
@@ -1108,6 +1123,12 @@ final class WaylandUI: ViewerUI {
 
     private static let wmBaseListener = make(xdg_wm_base_listener(
         ping: { _, base, serial in xdg_wm_base_pong(base, serial) }))
+
+    private static let syncListener = make(wl_callback_listener(
+        done: { data, callback, _ in
+            WaylandUI.ui(data).droppingInput = false
+            wl_callback_destroy(callback)
+        }))
 
     private static let probeListener: UnsafeMutablePointer<xdg_popup_listener> = {
         var l = xdg_popup_listener()

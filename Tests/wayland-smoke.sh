@@ -1,7 +1,7 @@
 #!/bin/sh
 # Drives the Linux build as a Wayland client of a headless sway at scale 1.5: still,
 # turned, alpha and animated images, fullscreen, the grid, the key-handler, then -o
-# with two marks. Screenshots land in $2.
+# with two marks. A mark typed while a slow handler runs must not count. Screenshots land in $2.
 set -eu
 bin=$1
 shots=$2
@@ -15,7 +15,12 @@ magick -size 300x300 plasma: "$pics/4-a-name-long-enough-to-lose-its-start-in-th
 export XDG_CONFIG_HOME="$pics/config"
 handler="$XDG_CONFIG_HOME/nsxiv-mac/exec/key-handler"
 mkdir -p "$(dirname "$handler")"
-printf '#!/bin/sh\n{ echo "key $1"; cat; } >"$0.ran"\n' >"$handler"
+# for the key s, the handler runs until the test takes its .waiting file away
+cat >"$handler" <<'EOF'
+#!/bin/sh
+if [ "$1" = s ]; then : >"$0.waiting"; while [ -e "$0.waiting" ]; do sleep 0.1; done; fi
+{ echo "key $1"; cat; } >"$0.ran"
+EOF
 chmod +x "$handler"
 
 XDG_RUNTIME_DIR=$(mktemp -d)
@@ -103,6 +108,14 @@ key g m m -k Return
 sleep 2
 shot 7-grid
 expect_inside
+# m while the handler runs, from the keyboard that started it, as a keyboard plugged in
+# meanwhile reaches no viewer that waits: dropped, as in nsxiv
+key -M ctrl x -m ctrl s -s 500 m
+for _ in $(seq 100); do [ -e "$handler.waiting" ] && break; sleep 0.1; done
+sleep 0.5
+rm "$handler.waiting"
+for _ in $(seq 100); do grep -q 'key s' "$handler.ran" 2>/dev/null && break; sleep 0.1; done
+sleep 0.5
 key -M ctrl x -m ctrl c
 sleep 1
 key q

@@ -1,6 +1,8 @@
 #!/bin/sh
 # Drives the Linux build under Xvfb: still, turned, alpha, animated and long-named
-# images, the grid, the key-handler, then -o with two marks. Screenshots land in $2.
+# images, the grid, the key-handler, then -o with two marks. The handler waits for a job of
+# its own, which a shell started with SIGCHLD blocked never sees end, and a mark typed while
+# a slow handler runs must not count. Screenshots land in $2.
 set -eu
 bin=$1
 shots=$2
@@ -14,7 +16,13 @@ magick -size 300x300 plasma: "$pics/4-a-name-long-enough-to-lose-its-start-in-th
 export XDG_CONFIG_HOME="$pics/config"
 handler="$XDG_CONFIG_HOME/nsxiv-mac/exec/key-handler"
 mkdir -p "$(dirname "$handler")"
-printf '#!/bin/sh\n{ echo "key $1"; cat; } >"$0.ran"\n' >"$handler"
+# for the key s, the handler runs until the test takes its .waiting file away
+cat >"$handler" <<'EOF'
+#!/bin/sh
+true & wait
+if [ "$1" = s ]; then : >"$0.waiting"; while [ -e "$0.waiting" ]; do sleep 0.1; done; fi
+{ echo "key $1"; cat; } >"$0.ran"
+EOF
 chmod +x "$handler"
 
 shot() { sleep 1; import -window root "$shots/$1.png"; }
@@ -41,6 +49,13 @@ shot 6-long-name
 xdotool key g m m Return
 sleep 2
 shot 7-grid
+xdotool key ctrl+x s
+for _ in $(seq 100); do [ -e "$handler.waiting" ] && break; sleep 0.1; done
+xdotool key m # while the handler runs: dropped, as in nsxiv
+sleep 0.5
+rm "$handler.waiting"
+for _ in $(seq 100); do grep -q 'key s' "$handler.ran" 2>/dev/null && break; sleep 0.1; done
+sleep 0.5
 xdotool key ctrl+x c
 sleep 1
 xdotool key q

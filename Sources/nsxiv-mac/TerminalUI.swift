@@ -641,13 +641,18 @@ final class TerminalUI: ViewerUI {
         var bytes = 0 // what the terminal stores of it; 0 when it was not written, as past the limit
     }
 
-    // job's frame, made with renderer in a canvas of its own
-    static func makeAhead(_ job: AheadJob, renderer: ImlibRenderer, canvas: inout Canvas) -> AheadFrame {
-        var frame = AheadFrame(stamp: stamp(job.path))
+    // The largest image the main queue decodes ahead, where a key that comes meanwhile waits for
+    // it. The helper, a process of its own, takes any.
+    private static let mainQueuePixels: CGFloat = 25_000_000
+
+    // job's frame, made with renderer in a canvas of its own, of an image of at most maxPixels
+    static func makeAhead(_ job: AheadJob, renderer: ImlibRenderer, canvas: inout Canvas,
+                          maxPixels: CGFloat = .infinity) -> AheadFrame {
+        var frame = AheadFrame(stamp: FileList.stamp(job.path))
         // peek decodes, so a neighbor it turned down waits for its file to change
-        guard let next = renderer.peek(URL(fileURLWithPath: job.path)) else { return frame }
+        guard let next = renderer.peek(URL(fileURLWithPath: job.path, isDirectory: false)) else { return frame }
         defer { renderer.release(next.image) }
-        guard next.size.width * next.size.height <= 25_000_000 else { return frame }
+        guard next.size.width * next.size.height <= maxPixels else { return frame }
         var view = job.view
         view.setImageSize(next.size, resetView: true) // as loading it will
         let pixels = framePixels(view, image: true, kitty: true, sixel: false, cellHeight: job.cellHeight, canvas: job.canvas)
@@ -728,7 +733,7 @@ final class TerminalUI: ViewerUI {
     // when the helper cannot run
     private func runAhead(_ job: AheadJob, forgotten: Int) {
         guard let helper = helper ?? startHelper(), var line = try? JSONEncoder().encode(job) else {
-            let frame = Self.makeAhead(job, renderer: renderer, canvas: &aheadCanvas)
+            let frame = Self.makeAhead(job, renderer: renderer, canvas: &aheadCanvas, maxPixels: Self.mainQueuePixels)
             sendAhead(job, frame, forgotten: forgotten)
             return
         }
@@ -747,7 +752,7 @@ final class TerminalUI: ViewerUI {
         process.standardInput = jobs
         process.standardOutput = answers
         process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else {
+        guard (try? process.runUnblocked()) != nil else {
             helperFailed = true
             return nil
         }
@@ -853,13 +858,13 @@ final class TerminalUI: ViewerUI {
                 return
             }
             // sixels: peek decodes, so a neighbor it turned down waits for its file to change
-            let stamp = Self.stamp(entry.path)
+            let stamp = FileList.stamp(entry.path)
             guard let next = renderer.peek(entry.url) else {
                 notAhead.insert(entry.path)
                 continue
             }
             defer { renderer.release(next.image) }
-            guard next.size.width * next.size.height <= 25_000_000 else {
+            guard next.size.width * next.size.height <= Self.mainQueuePixels else {
                 notAhead.insert(entry.path)
                 continue
             }
@@ -1047,7 +1052,7 @@ final class TerminalUI: ViewerUI {
     func loadImage(_ url: URL) -> ImageInfo? {
         if let file = loaded[url.path], !file.info.isAnimated, kept.keys.contains(where: { $0.path == url.path }) {
             DispatchQueue.global(qos: .userInitiated).async {
-                guard Self.stamp(url.path) != file.stamp else { return }
+                guard FileList.stamp(url.path) != file.stamp else { return }
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.viewer.currentEntry?.path == url.path else { return }
                     self.viewer.reloadCurrent()
@@ -1061,7 +1066,7 @@ final class TerminalUI: ViewerUI {
     // a file that changed since its frames were drawn, as one rewritten while another showed,
     // loads without them
     private func loadNow(_ url: URL) -> ImageInfo? {
-        let stamp = Self.stamp(url.path) // before the load, so a change during it shows next time
+        let stamp = FileList.stamp(url.path) // before the load, so a change during it shows next time
         if loaded[url.path]?.stamp != stamp { forgetFiles([url.path]) }
         let info = renderer.loadImage(url)
         rendererPath = url.path
@@ -1078,14 +1083,6 @@ final class TerminalUI: ViewerUI {
         guard rendererBehind else { return }
         rendererBehind = false
         renderer.imageChanged()
-    }
-
-    // what tells a file that changed from one that did not: its times, size and inode
-    private static func stamp(_ path: String) -> [Int]? {
-        var info = stat()
-        guard stat(path, &info) == 0 else { return nil }
-        return [info.st_mtim.tv_sec, info.st_mtim.tv_nsec, info.st_ctim.tv_sec, info.st_ctim.tv_nsec,
-                Int(info.st_size), Int(truncatingIfNeeded: info.st_ino)]
     }
 
     // the renderer catches up once it draws, which a kept frame never needs
@@ -1443,7 +1440,7 @@ final class TerminalUI: ViewerUI {
         process.standardError = FileHandle.nullDevice
         let exited = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in exited.signal() }
-        guard (try? process.run()) != nil else { return nil }
+        guard (try? process.runUnblocked()) != nil else { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         exited.wait()
         return process.terminationStatus == 0 ? data : nil

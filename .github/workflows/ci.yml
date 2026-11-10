@@ -26,6 +26,8 @@ jobs:
           done
           swiftc -parse-as-library "${sources[@]}" Tests/RegressionChecks.swift -o "$RUNNER_TEMP/nsxiv-regressions"
           "$RUNNER_TEMP/nsxiv-regressions"
+      - name: Open an image's directory through nsxiv-rifle
+        run: sh Tests/rifle-smoke.sh
       - name: Package
         run: tar -czf nsxiv-mac.tar.gz -C .build/release nsxiv-mac
       - uses: actions/upload-artifact@v4
@@ -70,6 +72,8 @@ jobs:
           swiftc -parse-as-library -I Sources/CX11 "${flags[@]}" "${sources[@]}" Tests/RegressionChecks.swift \
             -o "$RUNNER_TEMP/nsxiv-regressions"
           "$RUNNER_TEMP/nsxiv-regressions"
+      - name: Open an image's directory through nsxiv-rifle
+        run: sh Tests/rifle-smoke.sh
       - name: Run under X
         run: xvfb-run -a -s "-screen 0 1280x800x24" sh Tests/x11-smoke.sh .build/release/nsxiv-mac shots
       - name: Run under Wayland

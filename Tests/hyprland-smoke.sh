@@ -9,7 +9,7 @@ set -eu
 bin=$1
 pics=$(mktemp -d)
 log=$(mktemp)
-conf=$(mktemp --suffix=.conf)
+conf=$(mktemp --suffix=.lua)
 magick -size 200x200 xc:green "$pics/1-small.png"
 magick -size 1200x700 gradient:red-blue "$pics/2-large.png"
 
@@ -20,17 +20,14 @@ export XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP LIBSEAT_BACKEND
 unset DISPLAY WAYLAND_DISPLAY SWAYSOCK HYPRLAND_INSTANCE_SIGNATURE
 trap 'kill ${pid:-} ${hypr:-} 2>/dev/null || true' EXIT
 fail() { echo "$1" >&2; tail -60 "$log" >&2; exit 1; }
+# in Lua, the only configuration Hyprland 0.57 and later read
 cat >"$conf" <<'EOF'
-monitor = , preferred, auto, 1
-windowrule = match:class ^(nsxiv-mac)$, float on
-windowrule = match:class ^(nsxiv-mac)$, move 500 400
-misc {
-    disable_hyprland_logo = true
-    disable_splash_rendering = true
-}
-debug {
-    disable_logs = false
-}
+hl.monitor({ output = "", mode = "preferred", position = "auto", scale = 1 })
+hl.window_rule({ match = { class = "^(nsxiv-mac)$" }, float = true, move = { 500, 400 } })
+hl.config({
+    misc = { disable_hyprland_logo = true, disable_splash_rendering = true },
+    debug = { disable_logs = false },
+})
 EOF
 Hyprland --i-am-really-stupid --config "$conf" >"$log" 2>&1 &
 hypr=$!

@@ -38,7 +38,8 @@ protocol ViewerUI: AnyObject {
     func enterEditMode() -> Bool
     // the viewer is about to print to stdout and exit
     func willQuit()
-    // around a key-handler, which a terminal frontend hands the terminal to
+    // around a key-handler: a terminal frontend leaves it the screen, and a window then drops the
+    // keys that came while it ran
     func keyHandlerWillRun()
     func keyHandlerDidRun()
 }
@@ -240,6 +241,9 @@ final class Viewer {
 
     private func setCurrent(_ index: Int) {
         guard files.indices.contains(index) else { return }
+        // the image that shows stays as it is, as in nsxiv, when g comes on the first image or a
+        // slideshow has a single one
+        guard index != current || thumbnailMode else { return }
         if index != current { alternate = current }
         current = index
         grid.reveal(current)
@@ -556,10 +560,15 @@ final class Viewer {
         let marked = files.indices.filter { files[$0].marked }
         let targets = marked.isEmpty ? (files.indices.contains(current) ? [current] : []) : marked
         guard !targets.isEmpty else { return }
+        // the image that shows is looked at too: a handler may change it though others are marked
+        let checked = targets.contains(current) ? targets : targets + [current]
+        let before = checked.map { FileList.stamp(files[$0].path) }
 
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: handler)
-        proc.arguments = [key]
+        // a shell starts the handler once a line comes on its stdin, which the viewer writes after
+        // the terminal is the handler's, so no prompt of the handler's comes before that
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", "read -r _ && exec \"$0\" \"$@\"", handler, key]
         let pipe = Pipe()
         proc.standardInput = pipe
         // blocks like nsxiv; waitUntilExit would spin a nested run loop, and with it the
@@ -568,23 +577,29 @@ final class Viewer {
         proc.terminationHandler = { _ in exited.signal() }
         ui?.keyHandlerWillRun()
         do {
-            try proc.run()
+            try proc.runUnblocked()
         } catch {
             warn("key-handler failed: \(error.localizedDescription)")
             ui?.keyHandlerDidRun()
             return
         }
+        let takeTerminalBack = proc.lendTerminal()
         // a handler may stop reading early; with SIGPIPE ignored the write fails instead
-        try? pipe.fileHandleForWriting.write(contentsOf: Data(targets.map { files[$0].path + "\n" }.joined().utf8))
+        let paths = targets.map { files[$0].path + "\n" }.joined()
+        try? pipe.fileHandleForWriting.write(contentsOf: Data(("\n" + paths).utf8))
         try? pipe.fileHandleForWriting.close()
         exited.wait()
+        takeTerminalBack()
         ui?.keyHandlerDidRun()
-        // the handler may have edited, moved or deleted its files
-        ui?.invalidateThumbnails(targets.map { files[$0] })
-        let gone = targets.filter { !FileManager.default.fileExists(atPath: files[$0].path) }
-        let currentGone = gone.contains(current)
+        // the handler may have edited, moved or deleted its files. Those whose times, size or inode
+        // changed load anew; after a handler that only read them, as to copy a path, none does
+        let after = checked.map { FileList.stamp(files[$0].path) }
+        let changed = checked.indices.filter { after[$0] != before[$0] }.map { checked[$0] }
+        let gone = targets.indices.filter { after[$0] == nil }.map { targets[$0] } // checked starts with them
+        if !changed.isEmpty { ui?.invalidateThumbnails(changed.map { files[$0] }) }
+        let reload = changed.contains(current) && !gone.contains(current)
         removeFiles(at: Set(gone))
-        if !currentGone { reloadCurrent() }
+        if reload { reloadCurrent() }
     }
 
     private func enterEditMode() {
@@ -743,6 +758,46 @@ final class Viewer {
             moveSelection(d)
         } else {
             changeView { $0.scrollStep(d, screenful: false) }
+        }
+    }
+}
+
+extension Process {
+    // On Linux, libdispatch blocks most signals on its threads, and a program started from one
+    // inherits that. A shell then waits for good on a job of its own that ended, and a kill other
+    // than SIGKILL does not end the program. The terminal's three stop signals stay blocked, as
+    // Foundation gives the program a process group of its own, where nothing would resume it.
+    func runUnblocked() throws {
+        #if os(Linux)
+        var stops = sigset_t(), mask = sigset_t()
+        sigemptyset(&stops)
+        for stop in [SIGTSTP, SIGTTIN, SIGTTOU] { sigaddset(&stops, stop) }
+        pthread_sigmask(SIG_SETMASK, &stops, &mask)
+        defer { pthread_sigmask(SIG_SETMASK, &mask, nil) }
+        #endif
+        try run()
+    }
+
+    // Lends the started program the viewer's terminal, for its prompts, where the viewer has one
+    // and is in its foreground. Foundation may start the program in a process group of its own,
+    // and a terminal lets only its foreground group read. The call this returns takes the
+    // terminal back.
+    func lendTerminal() -> () -> Void {
+        let tty = open("/dev/tty", O_RDWR | O_NOCTTY | O_CLOEXEC)
+        guard tty >= 0, tcgetpgrp(tty) == getpgrp(), tcsetpgrp(tty, getpgid(processIdentifier)) == 0 else {
+            if tty >= 0 { close(tty) }
+            return {}
+        }
+        return {
+            // from the background, where the viewer is until this is done, tcsetpgrp stops its
+            // caller with SIGTTOU unless that is blocked
+            var ttou = sigset_t(), mask = sigset_t()
+            sigemptyset(&ttou)
+            sigaddset(&ttou, SIGTTOU)
+            pthread_sigmask(SIG_BLOCK, &ttou, &mask)
+            tcsetpgrp(tty, getpgrp())
+            pthread_sigmask(SIG_SETMASK, &mask, nil)
+            close(tty)
         }
     }
 }
